@@ -1,9 +1,9 @@
 class_name DredgeGrid
 extends Node
-## Dredge-inspired 8x6 Tetris ship inventory & stat compiler.
-## Handles 3 ship classes (Sloop/Brigantine/Frigate), slot-type constraints,
-## adjacency synergies (powder barrels, alchemist powder, gunner quarters),
-## crew/hull/sail upgrades, and weight penalties.
+## Dredge-inspired dynamic Tetris ship inventory & stat compiler.
+## Handles 6 ship classes (6x4 Sloop up to 10x7 War Galleon), slot-type constraints
+## (including BOW_WEAPON slots), adjacency synergies (powder barrels, alchemist powder,
+## gunner quarters), crew/hull/sail upgrades, and weight penalties.
 
 const GRID_WIDTH: int = 8
 const GRID_HEIGHT: int = 6
@@ -15,19 +15,68 @@ var stash_items: Array[Contracts.GridItemData] = []
 var current_stats: Contracts.ShipStats = Contracts.ShipStats.new()
 
 
+func get_grid_width() -> int:
+	var spec: Dictionary = Contracts.get_ship_class_spec(hull_tier)
+	return int(spec.get("grid_cols", GRID_WIDTH))
+
+
+func get_grid_height() -> int:
+	var spec: Dictionary = Contracts.get_ship_class_spec(hull_tier)
+	return int(spec.get("grid_rows", GRID_HEIGHT))
+
+
 func set_hull_tier(new_tier: int) -> void:
-	hull_tier = clampi(new_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.FRIGATE)
+	hull_tier = clampi(new_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	_evict_incompatible_items_to_stash()
 	compile_stats()
 
 
+func _evict_incompatible_items_to_stash() -> void:
+	var w: int = get_grid_width()
+	var h: int = get_grid_height()
+	var kept: Array[Contracts.GridItemData] = []
+	for item in placed_items:
+		if item == null:
+			continue
+		var eff: Vector2i = item.get_effective_size()
+		var valid: bool = (
+			item.grid_pos.x >= 0
+			and item.grid_pos.y >= 0
+			and item.grid_pos.x + eff.x <= w
+			and item.grid_pos.y + eff.y <= h
+		)
+		if valid:
+			var cells: Array[Vector2i] = get_item_cells(item, item.grid_pos.x, item.grid_pos.y, item.rotated)
+			for c in cells:
+				if not _is_slot_compatible(item, get_slot_type(c.x, c.y)):
+					valid = false
+					break
+		if valid:
+			kept.append(item)
+		else:
+			item.grid_pos = Vector2i(-1, -1)
+			if not (item in stash_items):
+				stash_items.append(item)
+	placed_items = kept
+
+
 func get_slot_type(gx: int, gy: int) -> int:
-	if gx < 0 or gx >= GRID_WIDTH or gy < 0 or gy >= GRID_HEIGHT:
+	var w: int = get_grid_width()
+	var h: int = get_grid_height()
+	if gx < 0 or gx >= w or gy < 0 or gy >= h:
 		return Contracts.SlotType.NONE
 	if gy == 0:
 		return Contracts.SlotType.DECK_PORT
-	if gy == 5:
+	if gy == h - 1:
 		return Contracts.SlotType.DECK_STARBOARD
-	if (gy == 2 or gy == 3) and gx >= 2 and gx <= 5:
+	if gx == w - 1 and gy >= 1 and gy <= h - 2 and gy >= (h - 1) / 2 and gy <= h / 2:
+		return Contracts.SlotType.BOW
+	var mast_w: int = clampi(w - 4, 2, 4)
+	var mast_x0: int = maxi(1, (w - mast_w) / 2)
+	var mast_x1: int = mini(w - 3, mast_x0 + mast_w - 1)
+	var mast_y0: int = maxi(1, (h - 2) / 2)
+	var mast_y1: int = mini(h - 2, mast_y0 + 1)
+	if gx >= mast_x0 and gx <= mast_x1 and gy >= mast_y0 and gy <= mast_y1:
 		return Contracts.SlotType.MAST
 	return Contracts.SlotType.CARGO_HOLD
 
@@ -45,7 +94,7 @@ func get_item_cells(item: Contracts.GridItemData, gx: int, gy: int, is_rotated: 
 
 
 func get_item_at(gx: int, gy: int) -> Contracts.GridItemData:
-	if gx < 0 or gx >= GRID_WIDTH or gy < 0 or gy >= GRID_HEIGHT:
+	if gx < 0 or gx >= get_grid_width() or gy < 0 or gy >= get_grid_height():
 		return null
 	for item in placed_items:
 		var cells: Array[Vector2i] = get_item_cells(item, item.grid_pos.x, item.grid_pos.y, item.rotated)
@@ -74,7 +123,7 @@ func can_place_item(item: Contracts.GridItemData, gx: int, gy: int, is_rotated: 
 		return false
 	var w: int = item.height if is_rotated else item.width
 	var h: int = item.width if is_rotated else item.height
-	if gx < 0 or gy < 0 or gx + w > GRID_WIDTH or gy + h > GRID_HEIGHT:
+	if gx < 0 or gy < 0 or gx + w > get_grid_width() or gy + h > get_grid_height():
 		return false
 
 	var candidate_cells: Array[Vector2i] = get_item_cells(item, gx, gy, is_rotated)
@@ -153,8 +202,10 @@ func rotate_item_in_grid(item: Contracts.GridItemData) -> bool:
 func auto_place_item(item: Contracts.GridItemData) -> bool:
 	if item == null:
 		return false
-	for gy in range(GRID_HEIGHT):
-		for gx in range(GRID_WIDTH):
+	var gw: int = get_grid_width()
+	var gh: int = get_grid_height()
+	for gy in range(gh):
+		for gx in range(gw):
 			if can_place_item(item, gx, gy, false):
 				return place_item(item, gx, gy, false)
 			if item.width != item.height and can_place_item(item, gx, gy, true):
@@ -166,6 +217,11 @@ func populate_starter_loadout() -> void:
 	placed_items.clear()
 	stash_items.clear()
 
+	var gw: int = get_grid_width()
+	var gh: int = get_grid_height()
+	var mast_x: int = maxi(1, (gw - clampi(gw - 4, 2, 4)) / 2)
+	var mast_y: int = maxi(1, (gh - 2) / 2)
+
 	var port_gun := ItemDatabase.create_item("swivel_gun_1x2", Contracts.ItemAffix.STANDARD)
 	var starboard_gun := ItemDatabase.create_item("swivel_gun_1x2", Contracts.ItemAffix.STANDARD)
 	var powder := ItemDatabase.create_item("powder_barrel_1x1", Contracts.ItemAffix.STANDARD)
@@ -173,19 +229,19 @@ func populate_starter_loadout() -> void:
 	var rum := ItemDatabase.create_item("rum_casks_1x1", Contracts.ItemAffix.STANDARD)
 
 	# Place directly before a single compile_stats() call
-	port_gun.grid_pos = Vector2i(2, 0)
-	port_gun.rotated = false
+	port_gun.grid_pos = Vector2i(1, 0)
+	port_gun.rotated = true
 	placed_items.append(port_gun)
 
-	starboard_gun.grid_pos = Vector2i(2, 4)
-	starboard_gun.rotated = false
+	starboard_gun.grid_pos = Vector2i(1, gh - 1)
+	starboard_gun.rotated = true
 	placed_items.append(starboard_gun)
 
 	powder.grid_pos = Vector2i(3, 0)
 	powder.rotated = false
 	placed_items.append(powder)
 
-	sail.grid_pos = Vector2i(3, 2)
+	sail.grid_pos = Vector2i(mast_x, mast_y)
 	sail.rotated = false
 	placed_items.append(sail)
 
@@ -217,10 +273,32 @@ func _is_cannon_mounted_side(cannon: Contracts.GridItemData) -> Dictionary:
 	return {"port": port, "starboard": starboard, "cells": cells}
 
 
+func _is_bow_mounted(weapon: Contracts.GridItemData) -> bool:
+	if weapon == null or weapon.category != Contracts.ItemCategory.BOW_WEAPON:
+		return false
+	var cells: Array[Vector2i] = get_item_cells(weapon, weapon.grid_pos.x, weapon.grid_pos.y, weapon.rotated)
+	for c in cells:
+		if get_slot_type(c.x, c.y) == Contracts.SlotType.BOW:
+			return true
+	return false
+
+
 func _is_synergy_source(item: Contracts.GridItemData) -> bool:
 	if item == null:
 		return false
-	return item.reload_synergy_bonus > 0.0 or item.burn_dps > 0.0 and item.category != Contracts.ItemCategory.CANNON
+	var is_weapon: bool = item.category == Contracts.ItemCategory.CANNON or item.category == Contracts.ItemCategory.BOW_WEAPON
+	return item.reload_synergy_bonus > 0.0 or (item.burn_dps > 0.0 and not is_weapon)
+
+
+func _is_mounted_weapon(item: Contracts.GridItemData) -> bool:
+	if item == null:
+		return false
+	if item.category == Contracts.ItemCategory.CANNON:
+		var side: Dictionary = _is_cannon_mounted_side(item)
+		return bool(side["port"]) or bool(side["starboard"])
+	if item.category == Contracts.ItemCategory.BOW_WEAPON:
+		return _is_bow_mounted(item)
+	return false
 
 
 func get_adjacent_synergy_cells() -> Array[Vector2i]:
@@ -231,10 +309,8 @@ func get_adjacent_synergy_cells() -> Array[Vector2i]:
 	for item in placed_items:
 		if _is_synergy_source(item):
 			sources.append(item)
-		elif item.category == Contracts.ItemCategory.CANNON:
-			var side: Dictionary = _is_cannon_mounted_side(item)
-			if bool(side["port"]) or bool(side["starboard"]):
-				mounted_cannons.append(item)
+		elif _is_mounted_weapon(item):
+			mounted_cannons.append(item)
 
 	for src in sources:
 		var s_cells: Array[Vector2i] = get_item_cells(src, src.grid_pos.x, src.grid_pos.y, src.rotated)
@@ -264,26 +340,24 @@ func get_synergy_pairs_for_preview(
 
 	if _is_synergy_source(item):
 		for other in placed_items:
-			if other == item or other.category != Contracts.ItemCategory.CANNON:
+			if other == item or not _is_mounted_weapon(other):
 				continue
-			var side: Dictionary = _is_cannon_mounted_side(other)
-			if not bool(side["port"]) and not bool(side["starboard"]):
-				continue
-			var o_cells: Array[Vector2i] = side["cells"]
+			var o_cells: Array[Vector2i] = get_item_cells(other, other.grid_pos.x, other.grid_pos.y, other.rotated)
 			if _cells_adjacent(preview_cells, o_cells):
 				for oc in o_cells:
 					if not (oc in result):
 						result.append(oc)
-	elif item.category == Contracts.ItemCategory.CANNON:
-		var touches_port: bool = false
-		var touches_starboard: bool = false
+	elif item.category == Contracts.ItemCategory.CANNON or item.category == Contracts.ItemCategory.BOW_WEAPON:
+		var is_mounted_preview: bool = false
 		for pc in preview_cells:
 			var st: int = get_slot_type(pc.x, pc.y)
-			if st == Contracts.SlotType.DECK_PORT:
-				touches_port = true
-			elif st == Contracts.SlotType.DECK_STARBOARD:
-				touches_starboard = true
-		if touches_port or touches_starboard:
+			if item.category == Contracts.ItemCategory.CANNON and (st == Contracts.SlotType.DECK_PORT or st == Contracts.SlotType.DECK_STARBOARD):
+				is_mounted_preview = true
+				break
+			if item.category == Contracts.ItemCategory.BOW_WEAPON and st == Contracts.SlotType.BOW:
+				is_mounted_preview = true
+				break
+		if is_mounted_preview:
 			for other in placed_items:
 				if other == item or not _is_synergy_source(other):
 					continue
@@ -296,35 +370,74 @@ func get_synergy_pairs_for_preview(
 	return result
 
 
+func _compile_weapon_entry(
+	item: Contracts.GridItemData,
+	item_cells: Array[Vector2i],
+	eff_size: Vector2i,
+	grid_w: int,
+	synergy_sources: Array[Dictionary],
+	class_reload_bonus: float
+) -> Dictionary:
+	var synergy_mult: float = class_reload_bonus
+	var mult_item: float = item.get_affix_stat_multiplier()
+	var total_burn_dps: float = item.burn_dps * mult_item
+	var max_added_burn: float = 0.0
+	for s_info in synergy_sources:
+		var src: Contracts.GridItemData = s_info["item"]
+		var s_cells: Array[Vector2i] = s_info["cells"]
+		if _cells_adjacent(s_cells, item_cells):
+			var src_mult: float = src.get_affix_stat_multiplier()
+			synergy_mult += src.reload_synergy_bonus * src_mult
+			if src.burn_dps > 0.0:
+				var added_burn: float = src.burn_dps * src_mult
+				total_burn_dps += added_burn
+				max_added_burn = maxf(max_added_burn, added_burn)
+
+	var eff_damage: float = item.get_effective_damage()
+	var eff_reload: float = item.get_effective_reload_time(synergy_mult)
+	var deck_offset_x: float = ((float(item.grid_pos.x) + float(eff_size.x) * 0.5) / float(maxi(1, grid_w)) - 0.5) * 34.0
+	var pellets: int = maxi(1, item.pellet_count)
+	var cannon_data := {
+		"instance_id": item.instance_id,
+		"id": item.id,
+		"name": item.get_display_name(),
+		"damage": eff_damage,
+		"pellet_count": pellets,
+		"reload_time": eff_reload,
+		"range": item.cannon_range,
+		"projectile_speed": item.projectile_speed,
+		"chain_shot_slow": item.chain_shot_slow,
+		"spread_angle_deg": item.spread_angle_deg,
+		"burn_dps": total_burn_dps,
+		"harpoon_pull": item.harpoon_pull * mult_item,
+		"synergy_mult": synergy_mult,
+		"grid_x": item.grid_pos.x,
+		"grid_y": item.grid_pos.y,
+		"deck_offset_x": deck_offset_x
+	}
+	return {
+		"cannon": cannon_data,
+		"salvo_damage": eff_damage * float(pellets),
+		"synergy_mult": synergy_mult,
+		"added_burn": max_added_burn
+	}
+
+
 func compile_stats() -> Contracts.ShipStats:
 	var stats := Contracts.ShipStats.new()
 	stats.hull_tier = hull_tier
 
-	var base_armor: float = 0.0
-	var base_turn: float = 1.75
-	match hull_tier:
-		Contracts.ShipClass.BRIGANTINE:
-			stats.base_max_hp = 190.0
-			stats.base_max_speed = 101.0
-			stats.max_safe_weight = 70.0
-			stats.acceleration = 45.0
-			stats.rudder_inertia = 5.6
-			base_turn = 1.65
-		Contracts.ShipClass.FRIGATE:
-			stats.base_max_hp = 280.0
-			stats.base_max_speed = 98.0
-			stats.max_safe_weight = 105.0
-			stats.acceleration = 42.0
-			stats.rudder_inertia = 4.6
-			base_armor = 4.0
-			base_turn = 1.45
-		_:
-			stats.base_max_hp = 120.0
-			stats.base_max_speed = 95.0
-			stats.max_safe_weight = 45.0
-			stats.acceleration = 48.0
-			stats.rudder_inertia = 6.5
-			base_turn = 1.75
+	var spec: Dictionary = Contracts.get_ship_class_spec(hull_tier)
+	var grid_w: int = int(spec.get("grid_cols", GRID_WIDTH))
+	var grid_h: int = int(spec.get("grid_rows", GRID_HEIGHT))
+	stats.base_max_hp = float(spec.get("base_hp", 120.0))
+	stats.base_max_speed = float(spec.get("base_speed", 95.0))
+	stats.max_safe_weight = float(spec.get("max_weight", 45.0))
+	stats.acceleration = float(spec.get("accel", 48.0))
+	stats.rudder_inertia = float(spec.get("inertia", 6.5))
+	var base_armor: float = float(spec.get("armor", 0.0))
+	var base_turn: float = float(spec.get("turn_speed", 1.75))
+	var class_reload_bonus: float = maxf(0.25, float(spec.get("reload_bonus", 1.0)))
 
 	var synergy_sources: Array[Dictionary] = []
 	var total_weight: float = 0.0
@@ -377,6 +490,7 @@ func compile_stats() -> Contracts.ShipStats:
 
 	var port_syn_sum: float = 0.0
 	var starboard_syn_sum: float = 0.0
+	var bow_syn_sum: float = 0.0
 	var active_burn_bonus: float = 0.0
 
 	for item in placed_items:
@@ -394,49 +508,32 @@ func compile_stats() -> Contracts.ShipStats:
 				primary_slot = Contracts.SlotType.DECK_STARBOARD
 
 			if is_port or is_starboard:
-				var synergy_mult: float = 1.0
-				var mult_item: float = item.get_affix_stat_multiplier()
-				var total_burn_dps: float = item.burn_dps * mult_item
-				for s_info in synergy_sources:
-					var src: Contracts.GridItemData = s_info["item"]
-					var s_cells: Array[Vector2i] = s_info["cells"]
-					if _cells_adjacent(s_cells, item_cells):
-						var src_mult: float = src.get_affix_stat_multiplier()
-						synergy_mult += src.reload_synergy_bonus * src_mult
-						if src.burn_dps > 0.0:
-							var added_burn: float = src.burn_dps * src_mult
-							total_burn_dps += added_burn
-							active_burn_bonus = maxf(active_burn_bonus, added_burn)
-
-				var eff_damage: float = item.get_effective_damage()
-				var eff_reload: float = item.get_effective_reload_time(synergy_mult)
-				var deck_offset_x: float = ((float(item.grid_pos.x) + float(eff_size.x) * 0.5) / float(GRID_WIDTH) - 0.5) * 34.0
-				var cannon_data := {
-					"instance_id": item.instance_id,
-					"id": item.id,
-					"name": item.get_display_name(),
-					"damage": eff_damage,
-					"reload_time": eff_reload,
-					"range": item.cannon_range,
-					"projectile_speed": item.projectile_speed,
-					"chain_shot_slow": item.chain_shot_slow,
-					"spread_angle_deg": item.spread_angle_deg,
-					"burn_dps": total_burn_dps,
-					"harpoon_pull": item.harpoon_pull * mult_item,
-					"synergy_mult": synergy_mult,
-					"grid_x": item.grid_pos.x,
-					"grid_y": item.grid_pos.y,
-					"deck_offset_x": deck_offset_x
-				}
+				var compiled: Dictionary = _compile_weapon_entry(item, item_cells, eff_size, grid_w, synergy_sources, class_reload_bonus)
+				var cannon_data: Dictionary = compiled["cannon"]
+				var salvo_dmg: float = float(compiled["salvo_damage"])
+				var synergy_mult: float = float(compiled["synergy_mult"])
+				active_burn_bonus = maxf(active_burn_bonus, float(compiled["added_burn"]))
 
 				if is_port:
 					stats.port_cannons.append(cannon_data.duplicate())
-					stats.port_salvo_damage += eff_damage
+					stats.port_salvo_damage += salvo_dmg
 					port_syn_sum += synergy_mult
 				if is_starboard:
 					stats.starboard_cannons.append(cannon_data.duplicate())
-					stats.starboard_salvo_damage += eff_damage
+					stats.starboard_salvo_damage += salvo_dmg
 					starboard_syn_sum += synergy_mult
+		elif item.category == Contracts.ItemCategory.BOW_WEAPON:
+			if _is_bow_mounted(item):
+				primary_slot = Contracts.SlotType.BOW
+				var compiled_bow: Dictionary = _compile_weapon_entry(item, item_cells, eff_size, grid_w, synergy_sources, class_reload_bonus)
+				var bow_data: Dictionary = compiled_bow["cannon"]
+				var bow_salvo: float = float(compiled_bow["salvo_damage"])
+				var bow_syn: float = float(compiled_bow["synergy_mult"])
+				active_burn_bonus = maxf(active_burn_bonus, float(compiled_bow["added_burn"]))
+
+				stats.bow_cannons.append(bow_data)
+				stats.bow_salvo_damage += bow_salvo
+				bow_syn_sum += bow_syn
 
 		var center_cell := Vector2(item.grid_pos) + Vector2(eff_size) * 0.5
 		stats.visual_equipped_items.append({
@@ -450,8 +547,8 @@ func compile_stats() -> Contracts.ShipStats:
 			"grid_y": item.grid_pos.y,
 			"width": eff_size.x,
 			"height": eff_size.y,
-			"norm_x": center_cell.x / float(GRID_WIDTH),
-			"norm_y": center_cell.y / float(GRID_HEIGHT),
+			"norm_x": center_cell.x / float(maxi(1, grid_w)),
+			"norm_y": center_cell.y / float(maxi(1, grid_h)),
 			"primary_color": item.primary_color,
 			"accent_color": item.accent_color
 		})
@@ -461,6 +558,10 @@ func compile_stats() -> Contracts.ShipStats:
 		stats.port_reload_multiplier = port_syn_sum / float(stats.port_cannons.size())
 	if not stats.starboard_cannons.is_empty():
 		stats.starboard_reload_multiplier = starboard_syn_sum / float(stats.starboard_cannons.size())
+	if not stats.bow_cannons.is_empty():
+		stats.bow_reload_multiplier = bow_syn_sum / float(stats.bow_cannons.size())
+	elif class_reload_bonus != 1.0:
+		stats.bow_reload_multiplier = class_reload_bonus
 
 	current_stats = stats
 	Contracts.bus().ship_stats_compiled.emit(ship_id, stats)
@@ -485,7 +586,7 @@ func to_dict() -> Dictionary:
 
 func from_dict(d: Dictionary) -> void:
 	ship_id = int(d.get("ship_id", ship_id))
-	hull_tier = clampi(int(d.get("hull_tier", hull_tier)), Contracts.ShipClass.SLOOP, Contracts.ShipClass.FRIGATE)
+	hull_tier = clampi(int(d.get("hull_tier", hull_tier)), Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
 	placed_items.clear()
 	stash_items.clear()
 
@@ -499,4 +600,5 @@ func from_dict(d: Dictionary) -> void:
 		if raw is Dictionary:
 			stash_items.append(Contracts.GridItemData.from_dict(raw))
 
+	_evict_incompatible_items_to_stash()
 	compile_stats()

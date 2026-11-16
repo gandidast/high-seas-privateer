@@ -26,7 +26,7 @@ func clear() -> void:
 	forts.clear()
 
 
-## Places up to 4 hostile pirate coastal forts / watchtowers on island headlands.
+## Places hostile pirate coastal forts / watchtowers on wild island headlands (never on safe harbors).
 func setup_island_forts(world_map: Node, rng: RandomNumberGenerator) -> void:
 	forts.clear()
 	var candidates: Array = []
@@ -37,8 +37,9 @@ func setup_island_forts(world_map: Node, rng: RandomNumberGenerator) -> void:
 
 	if candidates.is_empty():
 		var islands: Array = Contracts.get_islands()
-		for i in range(1, mini(5, islands.size())):
-			var isl: Contracts.IslandData = islands[i]
+		for isl in islands:
+			if isl.has_harbor:
+				continue
 			var fort_angle: float = isl.harbor_angle + PI * 0.72
 			var coast_r: float = Contracts.get_island_coast_radius(isl.index, fort_angle)
 			var fpos: Vector2 = isl.center + Vector2.from_angle(fort_angle) * maxf(24.0, coast_r - 18.0)
@@ -56,11 +57,9 @@ func setup_island_forts(world_map: Node, rng: RandomNumberGenerator) -> void:
 			continue
 		var entry: Dictionary = entry_var
 		var isl_idx: int = int(entry.get("island_index", placed))
-		# Keep starter/respawn harbor island (0 = Port Tortuga) free of hostile coastal forts
-		if isl_idx == 0 and candidates.size() > 4:
+		# Keep all safe harbor islands free of hostile coastal forts
+		if isl_idx in Contracts.SAFE_HARBOR_INDICES:
 			continue
-		if placed >= 4:
-			break
 		var fid: int = int(entry.get("fort_id", 8000 + isl_idx))
 		var pos: Vector2 = entry.get("world_pos", Vector2.ZERO)
 		var fname: String = str(entry.get("name", "Küsten-Fort #%d" % (placed + 1)))
@@ -115,7 +114,9 @@ func step_forts(delta: float, active_ships: Dictionary) -> Array[Dictionary]:
 			var s_fac: int = int(ship.get("faction"))
 			if s_fac == fort_faction:
 				continue
-			if int(ship.get("current_harbor_index")) == isl_idx and s_fac == Contracts.ShipFaction.PLAYER:
+			if ship.has_method("is_harbor_protected") and bool(ship.call("is_harbor_protected")):
+				continue
+			if s_fac == Contracts.ShipFaction.PLAYER and int(ship.get("current_harbor_index")) >= 0:
 				continue
 			var spos: Vector2 = ship.get("world_pos")
 			var d_sq: float = fpos.distance_squared_to(spos)

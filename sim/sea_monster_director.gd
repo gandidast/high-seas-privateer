@@ -6,6 +6,8 @@ extends RefCounted
 
 const KRAKEN_MAX_HP: float = 320.0
 const KRAKEN_ATTACK_RANGE: float = 115.0
+const KRAKEN_RESPAWN_SECONDS: float = 110.0
+const HARBOR_SAFE_MARGIN: float = 210.0
 
 var sea_monster: Dictionary = {}
 var sync_revision: int = 1
@@ -83,8 +85,9 @@ func step_sea_monster(
 	if sea_monster.is_empty() or bool(sea_monster.get("defeated", false)):
 		_respawn_timer -= delta
 		if _respawn_timer <= 0.0:
-			_respawn_timer = 85.0
+			_respawn_timer = KRAKEN_RESPAWN_SECONDS
 			var spawn_pos: Vector2 = pick_spawn_fn.call(ships)
+			spawn_pos = _nudge_away_from_safe_harbors(spawn_pos, depth_fn)
 			spawn_sea_monster(spawn_pos, combat_system_ref, damage_cb, spawn_pos)
 		return
 
@@ -107,11 +110,11 @@ func step_sea_monster(
 			var move_speed: float = 70.0 if enraged else 54.0
 			var step_dir: Vector2 = to_t / dist
 			var cand: Vector2 = mpos + step_dir * move_speed * delta
-			if float(depth_fn.call(cand)) > 0.08:
+			if float(depth_fn.call(cand)) > 0.08 and not _is_near_safe_harbor(cand, HARBOR_SAFE_MARGIN):
 				mpos = cand
 			else:
 				var cand_alt: Vector2 = mpos + step_dir.rotated(PI * 0.45) * move_speed * delta
-				if float(depth_fn.call(cand_alt)) > 0.08:
+				if float(depth_fn.call(cand_alt)) > 0.08 and not _is_near_safe_harbor(cand_alt, HARBOR_SAFE_MARGIN):
 					mpos = cand_alt
 
 	sea_monster["world_pos"] = mpos
@@ -158,7 +161,7 @@ func damage_sea_monster(monster_id: int, damage: float, combat_system_ref: Comba
 	var bus := _bus()
 	if hp <= 0.0:
 		sea_monster["defeated"] = true
-		_respawn_timer = 90.0
+		_respawn_timer = KRAKEN_RESPAWN_SECONDS
 		if combat_system_ref != null:
 			combat_system_ref.unregister_sea_monster(monster_id)
 		if bus != null:
@@ -187,12 +190,47 @@ func get_sea_monster_sync_dict() -> Dictionary:
 	}
 
 
+static func _is_ship_harbor_protected(s: Node) -> bool:
+	if s == null or not is_instance_valid(s):
+		return false
+	if s.has_method("is_harbor_protected"):
+		return bool(s.call("is_harbor_protected"))
+	return int(s.get("faction")) == Contracts.ShipFaction.PLAYER and int(s.get("current_harbor_index")) >= 0
+
+
+static func _is_near_safe_harbor(pos: Vector2, margin: float = HARBOR_SAFE_MARGIN) -> bool:
+	for isl in Contracts.get_islands():
+		if not isl.has_harbor:
+			continue
+		var safe_r: float = isl.harbor_radius + margin
+		if pos.distance_squared_to(isl.harbor_pos) <= safe_r * safe_r:
+			return true
+	return false
+
+
+static func _nudge_away_from_safe_harbors(pos: Vector2, depth_fn: Callable) -> Vector2:
+	if not _is_near_safe_harbor(pos, HARBOR_SAFE_MARGIN):
+		return pos
+	for isl in Contracts.get_islands():
+		if not isl.has_harbor:
+			continue
+		var safe_r: float = isl.harbor_radius + HARBOR_SAFE_MARGIN + 40.0
+		if pos.distance_squared_to(isl.harbor_pos) <= safe_r * safe_r:
+			var out_dir: Vector2 = (pos - isl.harbor_pos).normalized()
+			if out_dir.length_squared() < 0.01:
+				out_dir = Vector2.from_angle(isl.harbor_angle)
+			var cand: Vector2 = isl.harbor_pos + out_dir * safe_r
+			if float(depth_fn.call(cand)) > 0.14:
+				return cand
+	return Vector2.ZERO
+
+
 func _find_nearest_target(mpos: Vector2, ships: Dictionary) -> Node:
 	var target_ship: Node = null
 	var best_dist_sq: float = 950.0 * 950.0
 	for s_var in ships.values():
 		var s: Node = s_var
-		if s == null or bool(s.get("is_sunk")):
+		if s == null or bool(s.get("is_sunk")) or _is_ship_harbor_protected(s):
 			continue
 		var d_sq: float = mpos.distance_squared_to(s.get("world_pos"))
 		var weighted: float = d_sq * (0.6 if int(s.get("faction")) == Contracts.ShipFaction.PLAYER else 1.0)
@@ -208,7 +246,7 @@ func _perform_tentacle_slam(mid: int, mpos: Vector2, enraged: bool, ships: Dicti
 	var bus := _bus()
 	for s_var in ships.values():
 		var s: Node = s_var
-		if s == null or bool(s.get("is_sunk")):
+		if s == null or bool(s.get("is_sunk")) or _is_ship_harbor_protected(s):
 			continue
 		var spos: Vector2 = s.get("world_pos")
 		if mpos.distance_squared_to(spos) <= range_sq:

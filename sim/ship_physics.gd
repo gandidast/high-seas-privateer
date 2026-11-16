@@ -1,8 +1,8 @@
 class_name ShipPhysics
 extends Node
-## Snappy arcade sailing physics ("Privateers"-feel) with 3 ship classes,
+## Snappy arcade sailing physics ("Privateers"-feel) with 6 ship classes,
 ## 3 sail states, forgiving upwind handling, rudder inertia, shallow-water damping,
-## tangential coastline scraping, passive hull repair, burn DoT, and harbor detection.
+## tangential coastline scraping, passive hull repair, burn DoT, and safe-harbor protection.
 
 var ship_id: int = 1
 var faction: int = Contracts.ShipFaction.PLAYER
@@ -44,7 +44,7 @@ func setup(
 	heading = wrapf(p_heading, -PI, PI)
 	faction = p_faction
 	ship_name = p_name
-	hull_tier = clampi(stats.hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.FRIGATE)
+	hull_tier = clampi(stats.hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
 	_sync_hull_radius_for_tier()
 	velocity = Vector2.ZERO
 	speed = 0.0
@@ -63,27 +63,23 @@ func setup(
 
 
 func get_class_title() -> String:
-	match hull_tier:
-		Contracts.ShipClass.BRIGANTINE:
-			return "Brigg"
-		Contracts.ShipClass.FRIGATE:
-			return "Fregatte"
-		_:
-			return "Schaluppe"
+	var spec: Dictionary = Contracts.get_ship_class_spec(hull_tier)
+	return str(spec.get("name", "Schaluppe"))
 
 
 func _sync_hull_radius_for_tier() -> void:
-	match hull_tier:
-		Contracts.ShipClass.BRIGANTINE:
-			hull_radius = 16.0
-		Contracts.ShipClass.FRIGATE:
-			hull_radius = 19.0
-		_:
-			hull_radius = 14.0
+	var spec: Dictionary = Contracts.get_ship_class_spec(hull_tier)
+	hull_radius = float(spec.get("hull_radius", 14.0))
+
+
+func is_harbor_protected() -> bool:
+	return faction == Contracts.ShipFaction.PLAYER and (current_harbor_index >= 0 or bool(get_meta("harbor_ui_open", false)))
 
 
 func upgrade_ship_class(new_tier: int) -> void:
-	var clamped_tier: int = clampi(new_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.FRIGATE)
+	var clamped_tier: int = clampi(new_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	var old_spec: Dictionary = Contracts.get_ship_class_spec(hull_tier)
+	var new_spec: Dictionary = Contracts.get_ship_class_spec(clamped_tier)
 	var old_max: float = maxf(1.0, max_hp)
 	var ratio: float = clampf(hp / old_max, 0.0, 1.0)
 
@@ -95,35 +91,24 @@ func upgrade_ship_class(new_tier: int) -> void:
 
 	var old_base_hp: float = stats.base_max_hp
 	var old_base_speed: float = stats.base_max_speed
+	var old_base_armor: float = float(old_spec.get("armor", 0.0))
+	var old_base_turn: float = float(old_spec.get("turn_speed", 1.75))
 	stats.hull_tier = hull_tier
 
-	match hull_tier:
-		Contracts.ShipClass.BRIGANTINE:
-			stats.base_max_hp = 190.0
-			stats.base_max_speed = 101.0
-			stats.max_safe_weight = 70.0
-			stats.turn_speed = maxf(1.45, stats.turn_speed - 0.08)
-			stats.rudder_inertia = 5.6
-			stats.acceleration = 45.0
-		Contracts.ShipClass.FRIGATE:
-			stats.base_max_hp = 280.0
-			stats.base_max_speed = 98.0
-			stats.max_safe_weight = 105.0
-			stats.armor = maxf(stats.armor, 4.0)
-			stats.turn_speed = maxf(1.25, stats.turn_speed - 0.18)
-			stats.rudder_inertia = 4.6
-			stats.acceleration = 42.0
-		_:
-			stats.base_max_hp = 120.0
-			stats.base_max_speed = 95.0
-			stats.max_safe_weight = 45.0
-			stats.rudder_inertia = 6.5
-			stats.acceleration = 48.0
+	stats.base_max_hp = float(new_spec.get("base_hp", 120.0))
+	stats.base_max_speed = float(new_spec.get("base_speed", 95.0))
+	stats.max_safe_weight = float(new_spec.get("max_weight", 45.0))
+	stats.rudder_inertia = float(new_spec.get("inertia", 6.5))
+	stats.acceleration = float(new_spec.get("accel", 48.0))
 
 	var hp_delta: float = stats.base_max_hp - old_base_hp
 	var speed_delta: float = stats.base_max_speed - old_base_speed
+	var armor_delta: float = float(new_spec.get("armor", 0.0)) - old_base_armor
+	var turn_delta: float = float(new_spec.get("turn_speed", 1.75)) - old_base_turn
 	stats.max_hp = maxf(40.0, stats.max_hp + hp_delta)
 	stats.max_speed = maxf(35.0, stats.max_speed + speed_delta)
+	stats.armor = maxf(0.0, stats.armor + armor_delta)
+	stats.turn_speed = maxf(0.85, stats.turn_speed + turn_delta)
 	max_hp = stats.max_hp
 	if not is_sunk:
 		hp = clampf(ratio * max_hp, 1.0, max_hp)
@@ -138,7 +123,7 @@ func apply_stats(new_stats: Contracts.ShipStats) -> void:
 	var old_max: float = maxf(1.0, max_hp)
 	var ratio: float = clampf(hp / old_max, 0.0, 1.0)
 	stats = new_stats
-	hull_tier = clampi(stats.hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.FRIGATE)
+	hull_tier = clampi(stats.hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
 	_sync_hull_radius_for_tier()
 	max_hp = maxf(10.0, stats.max_hp)
 	if not is_sunk:
@@ -154,15 +139,26 @@ func set_sail_state(new_state: int) -> void:
 
 
 func apply_chain_slow(duration: float, slow_strength: float = 0.4) -> void:
+	if is_harbor_protected():
+		return
 	chain_slow_timer = maxf(chain_slow_timer, duration)
 	chain_slow_strength = clampf(maxf(chain_slow_strength, slow_strength), 0.0, 0.85)
 
 
 func apply_burn(duration: float, dps: float) -> void:
-	if is_sunk:
+	if is_sunk or is_harbor_protected():
 		return
 	burn_timer = maxf(burn_timer, maxf(0.0, duration))
 	burn_dps = maxf(burn_dps, maxf(0.0, dps))
+
+
+func _clear_status_effects() -> void:
+	burn_timer = 0.0
+	burn_dps = 0.0
+	_burn_emit_accum = 0.0
+	_burn_dmg_accum = 0.0
+	chain_slow_timer = 0.0
+	chain_slow_strength = 0.0
 
 
 func step_physics(delta: float, steer_input: float, world_map: WorldMap) -> void:
@@ -175,6 +171,9 @@ func step_physics(delta: float, steer_input: float, world_map: WorldMap) -> void
 		world_pos += velocity * delta
 		Contracts.bus().ship_state_updated.emit(ship_id, world_pos, heading, speed, sail_state, hp, max_hp)
 		return
+
+	if is_harbor_protected():
+		_clear_status_effects()
 
 	# Passive hull repair (e.g. Carpenter Workshop)
 	if stats != null and stats.passive_repair_rate > 0.0 and hp > 0.0 and hp < max_hp:
@@ -314,6 +313,8 @@ func step_physics(delta: float, steer_input: float, world_map: WorldMap) -> void
 				var isl: Contracts.IslandData = world_map.get_island(current_harbor_index)
 				var isl_name: String = isl.name if isl != null else ""
 				Contracts.bus().harbor_entered.emit(ship_id, current_harbor_index, isl_name)
+		if is_harbor_protected():
+			_clear_status_effects()
 
 	Contracts.bus().ship_state_updated.emit(ship_id, world_pos, heading, speed, sail_state, hp, max_hp)
 
@@ -345,7 +346,7 @@ func apply_sync_dict(d: Dictionary) -> void:
 	ship_id = int(d.get("ship_id", ship_id))
 	faction = int(d.get("faction", faction))
 	ship_name = str(d.get("ship_name", ship_name))
-	hull_tier = int(d.get("hull_tier", hull_tier))
+	hull_tier = clampi(int(d.get("hull_tier", hull_tier)), Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
 	_sync_hull_radius_for_tier()
 	world_pos = Vector2(float(d.get("x", world_pos.x)), float(d.get("y", world_pos.y)))
 	velocity = Vector2(float(d.get("vx", velocity.x)), float(d.get("vy", velocity.y)))

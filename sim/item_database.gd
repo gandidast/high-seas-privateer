@@ -1,6 +1,6 @@
 class_name ItemDatabase
 extends RefCounted
-## Catalog of 22 ship modules, cannons, powder barrels, sails, hull reinforcements,
+## Catalog of 27 ship modules, cannons, bow chasers, powder barrels, sails, hull reinforcements,
 ## crew modules, trade cargo, and treasures with RNG affix generation.
 
 static var _instance_counter: int = 0
@@ -313,6 +313,88 @@ static func _ensure_templates() -> void:
 		Color(0.30, 0.16, 0.44), Color(0.32, 0.94, 0.78)
 	)
 
+	# --- ROUND 3: 5 NEW WEAPONS (TOTAL 27) ---
+
+	_register(
+		"carronade_2x1",
+		"Schrot-Karonade",
+		"Kurzläufiges Schrotgeschütz mit verheerender Streuwirkung (4 Kugeln) auf kurze Distanz.",
+		Contracts.ItemCategory.CANNON,
+		Contracts.ItemRarity.UNCOMMON,
+		2, 1,
+		[Contracts.SlotType.DECK_PORT, Contracts.SlotType.DECK_STARBOARD, Contracts.SlotType.CARGO_HOLD],
+		5.5, 95,
+		Color(0.32, 0.30, 0.34), Color(0.86, 0.66, 0.30),
+		9.5, 2.6, 175.0, 235.0, 0.0, 22.0,
+		0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0, 0.0, 0.0,
+		4
+	)
+
+	_register(
+		"organ_gun_2x2",
+		"Orgel-Salvenkanone",
+		"Dreiläufige Salvenkanone auf Lafette für breite Feuerfächer (3 Kugeln).",
+		Contracts.ItemCategory.CANNON,
+		Contracts.ItemRarity.RARE,
+		2, 2,
+		[Contracts.SlotType.DECK_PORT, Contracts.SlotType.DECK_STARBOARD, Contracts.SlotType.CARGO_HOLD],
+		8.5, 165,
+		Color(0.42, 0.32, 0.24), Color(0.88, 0.74, 0.36),
+		13.5, 2.3, 255.0, 230.0, 0.0, 12.0,
+		0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0, 0.0, 0.0,
+		3
+	)
+
+	_register(
+		"twin_cannon_2x3",
+		"Schwere Doppelkanone",
+		"Gewaltiges Zwillingsgeschütz (2x34 Schaden) für Fregatten und Kriegsgaleonen.",
+		Contracts.ItemCategory.CANNON,
+		Contracts.ItemRarity.LEGENDARY,
+		2, 3,
+		[Contracts.SlotType.DECK_PORT, Contracts.SlotType.DECK_STARBOARD, Contracts.SlotType.CARGO_HOLD],
+		14.0, 290,
+		Color(0.24, 0.26, 0.32), Color(0.96, 0.80, 0.34),
+		34.0, 3.4, 300.0, 240.0, 0.0, 5.0,
+		0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0, 0.0, 0.0,
+		2
+	)
+
+	_register(
+		"pitch_mortar_2x2",
+		"Pech-Mörser",
+		"Weitreichender Kessel-Mörser, der brennende Pechgeschosse schleudert.",
+		Contracts.ItemCategory.CANNON,
+		Contracts.ItemRarity.RARE,
+		2, 2,
+		[Contracts.SlotType.DECK_PORT, Contracts.SlotType.DECK_STARBOARD, Contracts.SlotType.CARGO_HOLD],
+		9.5, 185,
+		Color(0.22, 0.20, 0.24), Color(0.98, 0.56, 0.18),
+		24.0, 3.5, 335.0, 205.0, 0.0, 6.0,
+		0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+		8.0, 0.0, 0.0, 0.0, 0.0,
+		1
+	)
+
+	_register(
+		"bow_chaser_1x2",
+		"Bug-Jagdkanone",
+		"Langes Buggeschütz (Leertaste) zur Verfolgung über den Vorsteven.",
+		Contracts.ItemCategory.BOW_WEAPON,
+		Contracts.ItemRarity.RARE,
+		1, 2,
+		[Contracts.SlotType.BOW, Contracts.SlotType.CARGO_HOLD],
+		5.0, 155,
+		Color(0.58, 0.44, 0.22), Color(0.96, 0.82, 0.38),
+		22.0, 2.2, 320.0, 285.0, 0.0, 3.5,
+		0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0, 0.0, 0.0,
+		1
+	)
+
 
 static func _register(
 	p_id: String,
@@ -343,7 +425,8 @@ static func _register(
 	p_harpoon_pull: float = 0.0,
 	p_ram_damage_bonus: float = 0.0,
 	p_passive_repair_rate: float = 0.0,
-	p_vision_bonus: float = 0.0
+	p_vision_bonus: float = 0.0,
+	p_pellet_count: int = 1
 ) -> void:
 	var item := Contracts.GridItemData.new()
 	item.id = p_id
@@ -365,6 +448,7 @@ static func _register(
 	item.projectile_speed = p_proj_speed
 	item.chain_shot_slow = p_chain_slow
 	item.spread_angle_deg = p_spread
+	item.pellet_count = maxi(1, p_pellet_count)
 	item.speed_bonus = p_speed_bonus
 	item.turn_bonus = p_turn_bonus
 	item.armor_bonus = p_armor_bonus
@@ -428,4 +512,73 @@ static func create_random_item(rng: RandomNumberGenerator = null, include_cargo:
 	var idx: int = rng.randi_range(0, candidates.size() - 1) if rng != null else randi_range(0, candidates.size() - 1)
 	var picked_id: String = candidates[idx]
 	var affix: int = roll_random_affix(rng)
+	return create_item(picked_id, affix)
+
+
+## Returns all weapon IDs (CANNON and optionally BOW_WEAPON) matching the rarity bounds.
+static func get_weapon_ids_by_tier(min_rarity: int = 0, max_rarity: int = 4, include_bow: bool = true) -> Array[String]:
+	_ensure_templates()
+	var ids: Array[String] = []
+	for key in _TEMPLATES.keys():
+		var id_str: String = str(key)
+		var tmpl: Contracts.GridItemData = _TEMPLATES[id_str]
+		var is_weapon: bool = tmpl.category == Contracts.ItemCategory.CANNON or (include_bow and tmpl.category == Contracts.ItemCategory.BOW_WEAPON)
+		if not is_weapon:
+			continue
+		if tmpl.rarity >= min_rarity and tmpl.rarity <= max_rarity:
+			ids.append(id_str)
+	return ids
+
+
+## Creates a weapon drop scaled to an enemy ship or harbor tier (0..5).
+static func create_tiered_weapon(tier: int, rng: RandomNumberGenerator = null) -> Contracts.GridItemData:
+	var clamped_tier: int = clampi(tier, 0, 5)
+	var min_r: int = Contracts.ItemRarity.COMMON
+	var max_r: int = Contracts.ItemRarity.UNCOMMON
+	match clamped_tier:
+		0, 1:
+			min_r = Contracts.ItemRarity.COMMON
+			max_r = Contracts.ItemRarity.UNCOMMON
+		2:
+			min_r = Contracts.ItemRarity.UNCOMMON
+			max_r = Contracts.ItemRarity.RARE
+		3:
+			min_r = Contracts.ItemRarity.RARE
+			max_r = Contracts.ItemRarity.RARE
+		4, 5:
+			min_r = Contracts.ItemRarity.RARE
+			max_r = Contracts.ItemRarity.LEGENDARY
+
+	var candidates: Array[String] = get_weapon_ids_by_tier(min_r, max_r, true)
+	if candidates.is_empty():
+		candidates = get_weapon_ids_by_tier(0, 4, true)
+	if candidates.is_empty():
+		return create_item("swivel_gun_1x2", Contracts.ItemAffix.STANDARD)
+
+	var idx: int = rng.randi_range(0, candidates.size() - 1) if rng != null else randi_range(0, candidates.size() - 1)
+	var picked_id: String = candidates[idx]
+
+	var roll: float = rng.randf() if rng != null else randf()
+	var affix: int = Contracts.ItemAffix.STANDARD
+	if clamped_tier >= 4:
+		if roll < 0.08:
+			affix = Contracts.ItemAffix.RUSTED
+		elif roll < 0.55:
+			affix = Contracts.ItemAffix.STANDARD
+		elif roll < 0.85:
+			affix = Contracts.ItemAffix.MASTERWORK
+		else:
+			affix = Contracts.ItemAffix.CURSED
+	elif clamped_tier >= 2:
+		if roll < 0.12:
+			affix = Contracts.ItemAffix.RUSTED
+		elif roll < 0.68:
+			affix = Contracts.ItemAffix.STANDARD
+		elif roll < 0.90:
+			affix = Contracts.ItemAffix.MASTERWORK
+		else:
+			affix = Contracts.ItemAffix.CURSED
+	else:
+		affix = roll_random_affix(rng)
+
 	return create_item(picked_id, affix)
