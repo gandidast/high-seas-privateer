@@ -410,6 +410,13 @@ func step_network(delta: float, local_steer: float = 0.0, local_sail_state: int 
 				rpc_id(1, "rpc_send_input", local_steer, local_sail_state)
 
 
+func send_input_immediately(local_steer: float, local_sail_state: int) -> void:
+	if current_mode == Mode.CLIENT and multiplayer.multiplayer_peer != null:
+		if multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+			_input_accum = 0.0
+			rpc_id(1, "rpc_send_input", local_steer, local_sail_state)
+
+
 func send_fire_request(is_starboard: bool) -> void:
 	if current_mode == Mode.CLIENT and multiplayer.multiplayer_peer != null:
 		if multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
@@ -541,10 +548,23 @@ func _broadcast_world_snapshot() -> void:
 		return
 
 	var ships_arr: Array = []
+	var seen_ship_ids: Dictionary = {}
 	for ship_var in all_ships_ref.values():
 		var s: Node = ship_var
 		if s != null and s.has_method("to_sync_dict"):
-			ships_arr.append(s.call("to_sync_dict"))
+			var sid: int = int(s.get("ship_id"))
+			if not seen_ship_ids.has(sid):
+				seen_ship_ids[sid] = true
+				ships_arr.append(s.call("to_sync_dict"))
+
+	if ai_director_ref != null:
+		for ai_ship_var in ai_director_ref.ai_ships.values():
+			var ai_s: Node = ai_ship_var
+			if ai_s != null and ai_s.has_method("to_sync_dict"):
+				var ai_sid: int = int(ai_s.get("ship_id"))
+				if not seen_ship_ids.has(ai_sid):
+					seen_ship_ids[ai_sid] = true
+					ships_arr.append(ai_s.call("to_sync_dict"))
 
 	var drops_arr: Array = []
 	if loot_system_ref != null:

@@ -33,6 +33,8 @@ var player_ship: Node = null
 var player_grid: Node = null
 var player_ship_id: int = 1
 var _respawn_timer: float = -1.0
+var _client_desired_sail_state: int = Contracts.SailState.ANCHORED
+var _server_respawn_timers: Dictionary = {} # peer_id (int) -> float
 
 # Visuals & UI (only instantiated in non-server mode)
 # Hybrid pipeline: 2D world runs inside a 640x360 SubViewport (stretched 2x Nearest),
@@ -404,6 +406,8 @@ func _on_solo_pressed() -> void:
 		ServerConfigScript.save_profile(cap_name, url_val)
 	if _start_screen != null:
 		_start_screen.visible = false
+	if get_viewport() != null:
+		get_viewport().gui_release_focus()
 	if network_manager == null:
 		network_manager = NetworkManager.new()
 		network_manager.name = "NetworkManager"
@@ -573,10 +577,15 @@ func _start_local_solo_game() -> void:
 
 func _on_network_client_joined(assigned_ship_id: int, server_seed: int) -> void:
 	_clear_game_world()
+	_client_desired_sail_state = Contracts.SailState.ANCHORED
 	if _reconnect_btn != null:
 		_reconnect_btn.visible = false
 	if _start_screen != null:
 		_start_screen.visible = false
+	if get_viewport() != null:
+		get_viewport().gui_release_focus()
+	if get_viewport() != null:
+		get_viewport().gui_release_focus()
 
 	world_seed = server_seed
 	player_ship_id = assigned_ship_id
@@ -587,7 +596,7 @@ func _on_network_client_joined(assigned_ship_id: int, server_seed: int) -> void:
 		ocean_renderer.call("setup", world_seed)
 
 	var cap_name: String = network_manager.local_captain_name
-	_spawn_local_player(player_ship_id, cap_name, false)
+	_spawn_local_player(player_ship_id, cap_name, true)
 
 	_init_ui_layers()
 	if player_grid != null and player_grid.has_method("compile_stats"):
@@ -713,7 +722,24 @@ func _physics_process(delta: float) -> void:
 			world_map.call("step_weather", delta)
 		for sid_var in all_ships.keys():
 			var ship: Node = all_ships[sid_var]
-			if ship == null or bool(ship.get("is_sunk")):
+			if ship == null:
+				continue
+			if bool(ship.get("is_sunk")):
+				var pid: int = int(sid_var)
+				var r_timer: float = float(_server_respawn_timers.get(pid, 3.0)) - delta
+				if r_timer <= 0.0:
+					_server_respawn_timers.erase(pid)
+					var islands: Array = Contracts.get_islands(world_seed)
+					var respawn_pos: Vector2 = islands[0].harbor_pos if not islands.is_empty() else Vector2.ZERO
+					ship.set("world_pos", respawn_pos)
+					ship.set("velocity", Vector2.ZERO)
+					ship.set("speed", 0.0)
+					ship.set("sail_state", Contracts.SailState.ANCHORED)
+					ship.set("is_sunk", false)
+					var mhp: float = float(ship.get("max_hp"))
+					ship.set("hp", mhp)
+				else:
+					_server_respawn_timers[pid] = r_timer
 				continue
 			var steer: float = float(ship.get_meta("net_steer", 0.0))
 			ship.call("step_physics", delta, steer, world_map)
@@ -763,9 +789,10 @@ func _physics_process(delta: float) -> void:
 		if hud_overlay != null:
 			hud_overlay.set_ships_dict(merged_ships)
 	else:
-		# Multiplayer client sends input and lets server snapshots drive transforms
-		var s_state: int = int(player_ship.get("sail_state")) if player_ship != null else Contracts.SailState.ANCHORED
-		network_manager.step_network(delta, steer_input, s_state)
+		# Multiplayer client sends desired sail & steer input; server snapshots drive transforms
+		network_manager.step_network(delta, steer_input, _client_desired_sail_state)
+		if combat_system != null:
+			combat_system.step_reloads(delta)
 		if hud_overlay != null:
 			hud_overlay.set_ships_dict(all_ships)
 
@@ -781,9 +808,19 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 
 	if event.is_action_pressed("sail_up"):
-		player_ship.call("change_sail_state", 1)
+		if network_manager.current_mode == NetworkManager.Mode.CLIENT:
+			_client_desired_sail_state = clampi(_client_desired_sail_state + 1, Contracts.SailState.ANCHORED, Contracts.SailState.FULL_SAIL)
+			player_ship.call("set_sail_state", _client_desired_sail_state)
+			network_manager.send_input_immediately(_get_current_steer_input(), _client_desired_sail_state)
+		else:
+			player_ship.call("change_sail_state", 1)
 	elif event.is_action_pressed("sail_down"):
-		player_ship.call("change_sail_state", -1)
+		if network_manager.current_mode == NetworkManager.Mode.CLIENT:
+			_client_desired_sail_state = clampi(_client_desired_sail_state - 1, Contracts.SailState.ANCHORED, Contracts.SailState.FULL_SAIL)
+			player_ship.call("set_sail_state", _client_desired_sail_state)
+			network_manager.send_input_immediately(_get_current_steer_input(), _client_desired_sail_state)
+		else:
+			player_ship.call("change_sail_state", -1)
 	elif event.is_action_pressed("fire_port"):
 		_trigger_player_broadside(false)
 	elif event.is_action_pressed("fire_starboard"):
@@ -795,6 +832,17 @@ func _unhandled_input(event: InputEvent) -> void:
 			var bus := _bus()
 			if bus != null:
 				bus.harbor_ui_requested.emit(open_now, h_idx)
+
+
+func _get_current_steer_input() -> float:
+	if _is_ui_open():
+		return 0.0
+	var s: float = 0.0
+	if Input.is_action_pressed("steer_left"):
+		s -= 1.0
+	if Input.is_action_pressed("steer_right"):
+		s += 1.0
+	return s
 
 
 func _trigger_player_broadside(is_starboard: bool) -> void:
@@ -963,6 +1011,8 @@ func _on_snapshot_received(snapshot: Dictionary) -> void:
 				rend.call("set_hull_tier", int(sd["hull_tier"]))
 		if sid == player_ship_id:
 			player_ship = ship
+			if bool(ship.get("is_sunk")):
+				_client_desired_sail_state = Contracts.SailState.ANCHORED
 			if harbor_ui != null:
 				harbor_ui.player_ship = ship
 			if hud_overlay != null:
@@ -1062,6 +1112,8 @@ func _on_broadside_fired(
 		r.call("trigger_muzzle_flash", is_starboard)
 	if sid == player_ship_id and pixel_camera != null:
 		pixel_camera.call("add_trauma", 0.25)
+	if sid == player_ship_id and network_manager != null and network_manager.current_mode == NetworkManager.Mode.CLIENT and combat_system != null:
+		combat_system.trigger_client_reload_visual(sid, is_starboard)
 
 
 func _on_ship_damaged(

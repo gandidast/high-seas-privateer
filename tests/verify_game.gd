@@ -371,9 +371,46 @@ func _test_visual_pipeline_and_headless_server_boot() -> void:
 	)
 	var srv_err: int = main_node.network_manager.start_server(18089, Contracts.DEFAULT_WORLD_SEED)
 	_assert_true(srv_err == OK, "NetworkManager WebSocket server must bind cleanly (err=%d)" % srv_err)
+	main_node._on_server_peer_joined(4242, "TestPeer")
 	for _i in range(5):
 		main_node._physics_process(0.05)
+
+	# Verify server snapshot includes BOTH player ships and AI ships + forts
+	var srv_ships_count: int = main_node.all_ships.size() + main_node.ai_director.ai_ships.size()
+	_assert_true(srv_ships_count >= 5, "Server must track both joined player ship and AI ships (got %d)" % srv_ships_count)
+	var peer_ship: Node = main_node.all_ships.get(4242, null)
+	_assert_true(peer_ship != null, "Server must spawn joined peer ship")
+	peer_ship.call("set_sail_state", Contracts.SailState.FULL_SAIL)
+	for _i in range(20):
+		main_node._physics_process(0.05)
+	_assert_true(float(peer_ship.get("speed")) > 20.0, "Server-side peer ship must sail forward under FULL_SAIL (speed=%.2f)" % float(peer_ship.get("speed")))
+
+	# Build snapshot array just like _broadcast_world_snapshot and feed to client _on_snapshot_received
+	var snap_ships: Array = []
+	for s in main_node.all_ships.values():
+		snap_ships.append(s.call("to_sync_dict"))
+	for ai_s in main_node.ai_director.ai_ships.values():
+		snap_ships.append(ai_s.call("to_sync_dict"))
+	var test_snapshot: Dictionary = {
+		"wind_x": 1.0,
+		"wind_y": 0.0,
+		"wind_strength": 0.8,
+		"weather_state": Contracts.WeatherState.FOG,
+		"weather_intensity": 0.6,
+		"wanted_level": 0,
+		"ships": snap_ships,
+		"drops": main_node.loot_system.to_sync_array(),
+		"forts": main_node.combat_system.get_fort_sync_array(),
+		"sea_monster": {}
+	}
 	main_node.network_manager.shutdown()
+	main_node._clear_game_world()
+	main_node.is_headless_server = false
+	main_node.player_ship_id = 4242
+	main_node._init_simulation(Contracts.DEFAULT_WORLD_SEED, false)
+	main_node._on_snapshot_received(test_snapshot)
+	_assert_true(main_node.all_ships.size() >= 5, "Client _on_snapshot_received must instantiate both player and all AI ships (got %d)" % main_node.all_ships.size())
+	_assert_true(main_node.combat_system.forts.size() >= 3, "Client _on_snapshot_received must sync island forts (got %d)" % main_node.combat_system.forts.size())
 	main_node._clear_game_world()
 	main_node.queue_free()
 

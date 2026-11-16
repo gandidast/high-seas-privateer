@@ -400,16 +400,15 @@ void fragment() {
 	// 5. DYNAMIC WEATHER OVERLAYS: PIXEL FOG BANKS & STORM RAIN + LIGHTNING
 	// ------------------------------------------------------------------
 	if (fog_mix > 0.01) {
-		vec2 fog_uv1 = floor(wp * 0.5) * 0.024 + vec2(TIME * 0.055, -TIME * 0.025);
-		vec2 fog_uv2 = floor(wp * 0.5) * 0.048 + vec2(-TIME * 0.035, TIME * 0.03);
+		vec2 fog_uv1 = floor(wp * 0.5) * 0.018 + vec2(TIME * 0.045, -TIME * 0.018);
+		vec2 fog_uv2 = floor(wp * 0.5) * 0.034 + vec2(-TIME * 0.025, TIME * 0.022);
 		float n1 = value_noise(fog_uv1);
 		float n2 = value_noise(fog_uv2);
-		float fog_density = clamp((n1 * 0.65 + n2 * 0.35 - 0.22) * 1.45, 0.0, 1.0);
-		float land_attenuation = (depth <= 0.0) ? 0.68 : 1.0;
-		float fog_alpha = fog_density * fog_mix * 0.68 * land_attenuation;
-		float dither_step = step(dither, fract(fog_alpha * 3.0)) * (1.0 / 3.0) + floor(fog_alpha * 3.0) / 3.0;
+		float fog_density = smoothstep(0.32, 0.85, n1 * 0.65 + n2 * 0.35);
+		float land_attenuation = (depth <= 0.0) ? 0.50 : 1.0;
+		float fog_alpha = fog_density * fog_mix * 0.42 * land_attenuation;
 		vec3 fog_color = vec3(0.753, 0.855, 0.886);
-		col = mix(col, fog_color, clamp(dither_step, 0.0, 0.72));
+		col = mix(col, fog_color, clamp(fog_alpha, 0.0, 0.42));
 	}
 
 	if (storm_mix > 0.01) {

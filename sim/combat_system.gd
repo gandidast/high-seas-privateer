@@ -358,6 +358,34 @@ func step_reloads(delta: float) -> void:
 					arr[i] = maxf(0.0, float(arr[i]) - delta)
 
 
+func trigger_client_reload_visual(ship_id: int, is_starboard: bool) -> void:
+	var ship: Node = ships.get(ship_id, null)
+	if ship == null:
+		return
+	var cannons: Array = _get_effective_cannons(ship, is_starboard)
+	_ensure_reload_slots(ship)
+	var side_key: String = "starboard" if is_starboard else "port"
+	var timers: Array = _reload_timers[ship_id][side_key]
+	var max_timers: Array = _reload_max[ship_id][side_key]
+	var stats: Contracts.ShipStats = ship.get("stats")
+	var side_reload_mult: float = 1.0
+	if stats != null:
+		side_reload_mult = stats.starboard_reload_multiplier if is_starboard else stats.port_reload_multiplier
+	side_reload_mult = maxf(0.25, side_reload_mult)
+	for i in range(cannons.size()):
+		if float(timers[i]) <= 0.001:
+			var c: Dictionary = cannons[i]
+			var reload_dur: float = 2.8
+			if c.has("effective_reload_time"):
+				reload_dur = float(c["effective_reload_time"])
+			elif c.has("synergy_mult"):
+				reload_dur = maxf(0.35, float(c.get("reload_time", 2.8)))
+			else:
+				reload_dur = maxf(0.35, float(c.get("reload_time", 2.8)) / side_reload_mult)
+			timers[i] = reload_dur
+			max_timers[i] = reload_dur
+
+
 ## Resolves ship-to-ship hull ramming collisions, applying ram_damage_bonus and clean separation.
 func step_ship_collisions(delta: float, p_ships: Dictionary = {}) -> void:
 	for key in _ram_cooldowns.keys():
