@@ -1,13 +1,14 @@
 class_name ServerConfig
 extends RefCounted
 ## Central server & player profile configuration for High Seas Pixel Privateer.
-## Supports Render.com (wss://), Hugging Face Docker Spaces, Oracle Cloud, local localhost fallback,
+## Supports 24/7 Oracle Cloud (sslip.io wss://), Render.com, Hugging Face, local localhost fallback,
 ## HTML5 URL query parameters (?server=wss://...), and persistent captain profile.
 
-const DEFAULT_SERVER_URL := "wss://high-seas-privateer.onrender.com"
+const DEFAULT_SERVER_URL := "wss://92.5.97.143.sslip.io"
 const LOCAL_SERVER_URL := "ws://localhost:8080"
 const PROFILE_PATH := "user://player_profile.cfg"
 const DEPRECATED_DEFAULT_URLS := [
+	"wss://high-seas-privateer.onrender.com",
 	"wss://fabsipapi-high-seas-privateer.hf.space",
 	"wss://DEINE-ORACLE-IP.sslip.io"
 ]
