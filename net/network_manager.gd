@@ -283,6 +283,21 @@ func send_fire_request(is_starboard: bool) -> void:
 		rpc_id(1, "rpc_request_fire", is_starboard)
 
 
+func send_fire_bow_request() -> void:
+	if _can_send_client_rpc():
+		rpc_id(1, "rpc_request_fire_bow")
+
+
+func send_harbor_ui_state(is_open: bool) -> void:
+	if _can_send_client_rpc():
+		rpc_id(1, "rpc_set_harbor_ui_open", is_open)
+
+
+func send_bounty_quest_request(target_pos: Vector2, boss_name: String, hull_tier: int = Contracts.ShipClass.BRIGANTINE) -> void:
+	if _can_send_client_rpc():
+		rpc_id(1, "rpc_request_bounty_spawn", target_pos, boss_name, hull_tier)
+
+
 func send_player_stats(stats: Contracts.ShipStats) -> void:
 	if stats != null and _can_send_client_rpc():
 		rpc_id(1, "rpc_sync_player_stats", stats.to_dict())
@@ -341,6 +356,7 @@ func _bind_server_eventbus_relays() -> void:
 	bus.cannonball_spawned.connect(func(sd: Dictionary): _relay_rpc("rpc_client_cannonball_spawned", [sd]))
 	bus.cannonball_impact.connect(func(pos: Vector2, hsid: int, dmg: float, splash: bool, crit: bool): _relay_rpc("rpc_client_cannonball_impact", [pos, hsid, dmg, splash, crit]))
 	bus.ship_sunk.connect(func(sid: int, pos: Vector2, fac: int, ksid: int): _relay_rpc("rpc_client_ship_sunk", [sid, pos, fac, ksid]))
+	bus.player_death_penalty.connect(func(sid: int, gold_lost: int, respawn_sec: float): _relay_rpc("rpc_client_player_death_penalty", [sid, gold_lost, respawn_sec]))
 	bus.loot_collected.connect(func(did: int, csid: int, ld: Contracts.LootDropData): _relay_rpc("rpc_client_loot_collected", [did, csid, ld.gold if ld != null else 0]))
 	bus.weather_changed.connect(func(ws: int, wi: float): _relay_rpc("rpc_client_weather_changed", [ws, wi]))
 	bus.wanted_level_changed.connect(func(lvl: int): _relay_rpc("rpc_client_wanted_level_changed", [lvl]))
@@ -573,6 +589,31 @@ func rpc_request_fire(is_starboard: bool) -> void:
 
 
 @rpc("any_peer", "reliable")
+func rpc_request_fire_bow() -> void:
+	if current_mode == Mode.SERVER and combat_system_ref != null and combat_system_ref.has_method("fire_bow"):
+		combat_system_ref.call("fire_bow", multiplayer.get_remote_sender_id())
+
+
+@rpc("any_peer", "reliable")
+func rpc_set_harbor_ui_open(is_open: bool) -> void:
+	if current_mode != Mode.SERVER:
+		return
+	var ship: Node = all_ships_ref.get(multiplayer.get_remote_sender_id(), null)
+	if ship != null:
+		ship.set_meta("harbor_ui_open", is_open)
+
+
+@rpc("any_peer", "reliable")
+func rpc_request_bounty_spawn(target_pos: Vector2, boss_name: String, hull_tier: int = Contracts.ShipClass.BRIGANTINE) -> void:
+	if current_mode != Mode.SERVER or ai_director_ref == null:
+		return
+	var clean_name: String = boss_name.strip_edges().left(32)
+	var clamped_tier: int = clampi(hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	ai_director_ref.spawn_ai_ship(Contracts.ShipFaction.PIRATE, target_pos, true, clean_name, clamped_tier, false)
+	_force_full_snapshot = true
+
+
+@rpc("any_peer", "reliable")
 func rpc_sync_player_stats(stats_dict: Dictionary) -> void:
 	if current_mode != Mode.SERVER:
 		return
@@ -594,7 +635,7 @@ func rpc_upgrade_ship_class(new_hull_tier: int) -> void:
 		return
 	var ship: Node = all_ships_ref.get(multiplayer.get_remote_sender_id(), null)
 	if ship != null and ship.has_method("upgrade_ship_class"):
-		ship.call("upgrade_ship_class", clampi(new_hull_tier, 0, 2))
+		ship.call("upgrade_ship_class", clampi(new_hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON))
 
 
 @rpc("any_peer", "reliable")
@@ -634,6 +675,12 @@ func rpc_client_cannonball_impact(world_pos: Vector2, hit_ship_id: int, damage: 
 func rpc_client_ship_sunk(ship_id: int, world_pos: Vector2, faction: int, killer_ship_id: int) -> void:
 	if current_mode == Mode.CLIENT and _bus() != null:
 		_bus().ship_sunk.emit(ship_id, world_pos, faction, killer_ship_id)
+
+
+@rpc("authority", "reliable")
+func rpc_client_player_death_penalty(ship_id: int, gold_lost: int, respawn_sec: float) -> void:
+	if current_mode == Mode.CLIENT and _bus() != null:
+		_bus().player_death_penalty.emit(ship_id, gold_lost, respawn_sec)
 
 
 @rpc("authority", "reliable")

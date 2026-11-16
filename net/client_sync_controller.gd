@@ -150,6 +150,16 @@ func trigger_local_fire_anticipation(sid: int, is_starboard: bool) -> void:
 		combat_system_ref.trigger_client_reload_visual(sid, is_starboard)
 
 
+func trigger_local_bow_fire_anticipation(sid: int) -> void:
+	var r: Node2D = ship_renderers_ref.get(sid, null)
+	if r != null and is_instance_valid(r) and r.has_method("trigger_bow_muzzle_flash"):
+		r.call("trigger_bow_muzzle_flash")
+	if pixel_camera_ref != null:
+		pixel_camera_ref.call("add_trauma", 0.18)
+	if combat_system_ref != null and combat_system_ref.has_method("trigger_client_bow_reload_visual"):
+		combat_system_ref.call("trigger_client_bow_reload_visual", sid)
+
+
 func ensure_ship_renderer(sid: int, faction: int, ship_name: String, pos: Vector2, heading: float) -> void:
 	if _is_headless or world_root_ref == null or _ship_renderer_script == null:
 		return
@@ -261,30 +271,46 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 			continue
 
 		var rend: Node2D = ship_renderers_ref.get(sid, null)
+		var prev_sunk: bool = bool(ship.get("is_sunk"))
 		if sid == player_ship_id:
 			_reconcile_local_player(ship, rend, sd, is_new_ship, player_ack)
 		elif sd.size() > 1:
 			_sync_remote_ship(sid, ship, rend, sd, is_new_ship, _latest_srv_time)
 
 		if sd.has("hull_tier") and rend != null and is_instance_valid(rend) and rend.has_method("set_hull_tier"):
-			rend.call("set_hull_tier", int(sd["hull_tier"]))
-		if bus != null and (is_new_ship or _ship_visual_changed(sid, ship)):
+			rend.call("set_hull_tier", clampi(int(sd["hull_tier"]), 0, 5))
+		var now_sunk: bool = bool(ship.get("is_sunk"))
+		if (is_new_ship or sd.has("is_sunk") or now_sunk != prev_sunk) and rend != null and is_instance_valid(rend) and rend.has_method("set_sunk"):
+			rend.call("set_sunk", now_sunk)
+		if bus != null and (is_new_ship or now_sunk != prev_sunk or _ship_visual_changed(sid, ship)):
 			_emit_ship_state(bus, sid, ship)
 
-	var to_remove: Array[int] = []
-	for existing_var in all_ships_ref.keys():
-		var eid: int = int(existing_var)
-		if not seen_ids.has(eid) and eid != player_ship_id:
-			to_remove.append(eid)
-	for eid in to_remove:
-		_remote_extrap_age.erase(eid)
-		_remote_interp.erase(eid)
-		_last_ship_visuals.erase(eid)
-		var old_ship: Node = all_ships_ref.get(eid, null)
-		all_ships_ref.erase(eid)
-		if is_instance_valid(old_ship):
-			old_ship.queue_free()
-		_on_ship_despawned(eid)
+	if snapshot.has("ships"):
+		var to_remove: Array[int] = []
+		for existing_var in all_ships_ref.keys():
+			var eid: int = int(existing_var)
+			if not seen_ids.has(eid) and eid != player_ship_id:
+				to_remove.append(eid)
+		for eid in to_remove:
+			_remote_extrap_age.erase(eid)
+			_remote_interp.erase(eid)
+			_last_ship_visuals.erase(eid)
+			if combat_system_ref != null:
+				combat_system_ref.unregister_ship(eid)
+			var old_ship: Node = all_ships_ref.get(eid, null)
+			all_ships_ref.erase(eid)
+			if is_instance_valid(old_ship):
+				old_ship.queue_free()
+			_on_ship_despawned(eid)
+
+		# Clean up any orphan ship renderers left behind by ghost wrecks
+		var orphan_renderers: Array[int] = []
+		for rid_var in ship_renderers_ref.keys():
+			var rid: int = int(rid_var)
+			if rid != player_ship_id and not seen_ids.has(rid) and not all_ships_ref.has(rid):
+				orphan_renderers.append(rid)
+		for rid in orphan_renderers:
+			_on_ship_despawned(rid)
 
 
 func step_remote_extrapolation(delta: float) -> void:
@@ -502,11 +528,15 @@ func _sync_remote_ship(sid: int, ship: Node, rend: Node2D, sd: Dictionary, is_ne
 func _apply_authoritative_non_kinematic(ship: Node, sd: Dictionary) -> void:
 	ship.set("faction", int(sd.get("faction", ship.get("faction"))))
 	ship.set("ship_name", str(sd.get("ship_name", ship.get("ship_name"))))
-	var new_tier: int = int(sd.get("hull_tier", ship.get("hull_tier")))
+	var new_tier: int = clampi(int(sd.get("hull_tier", ship.get("hull_tier"))), 0, 5)
 	if new_tier != int(ship.get("hull_tier")):
 		ship.set("hull_tier", new_tier)
 		if ship.has_method("_sync_hull_radius_for_tier"):
 			ship.call("_sync_hull_radius_for_tier")
+		var sid: int = int(ship.get("ship_id"))
+		var r: Node2D = ship_renderers_ref.get(sid, null)
+		if r != null and is_instance_valid(r) and r.has_method("set_hull_tier"):
+			r.call("set_hull_tier", new_tier)
 	for prop in ["hp", "max_hp", "chain_slow_timer", "burn_timer"]:
 		ship.set(prop, float(sd.get(prop, ship.get(prop))))
 	ship.set("is_sunk", bool(sd.get("is_sunk", ship.get("is_sunk"))))
@@ -524,6 +554,7 @@ func _ship_visual_changed(sid: int, ship: Node) -> bool:
 		or int(p["sail"]) != int(ship.get("sail_state"))
 		or absf(float(p["hp"]) - float(ship.get("hp"))) > 0.05
 		or absf(float(p["mhp"]) - float(ship.get("max_hp"))) > 0.05
+		or bool(p.get("sunk", false)) != bool(ship.get("is_sunk"))
 	)
 
 
@@ -534,10 +565,14 @@ func _emit_ship_state(bus: Contracts, sid: int, ship: Node) -> void:
 	var sail: int = int(ship.get("sail_state"))
 	var hp: float = float(ship.get("hp"))
 	var mhp: float = float(ship.get("max_hp"))
-	_last_ship_visuals[sid] = { "pos": pos, "hdg": hdg, "spd": spd, "sail": sail, "hp": hp, "mhp": mhp }
+	var sunk: bool = bool(ship.get("is_sunk"))
+	_last_ship_visuals[sid] = { "pos": pos, "hdg": hdg, "spd": spd, "sail": sail, "hp": hp, "mhp": mhp, "sunk": sunk }
 	var r: Node2D = ship_renderers_ref.get(sid, null)
-	if r != null and is_instance_valid(r) and r.has_method("set_kinematic_velocity"):
-		r.call("set_kinematic_velocity", ship.get("velocity"), float(ship.get("angular_velocity")))
+	if r != null and is_instance_valid(r):
+		if r.has_method("set_kinematic_velocity"):
+			r.call("set_kinematic_velocity", ship.get("velocity"), float(ship.get("angular_velocity")))
+		if r.has_method("set_sunk"):
+			r.call("set_sunk", sunk)
 	bus.ship_state_updated.emit(sid, pos, hdg, spd, sail, hp, mhp)
 
 
@@ -548,7 +583,7 @@ func _on_ship_spawned(sid: int, ship_data: Dictionary) -> void:
 	if ship_data.has("hull_tier") and ship_renderers_ref.has(sid):
 		var r: Node2D = ship_renderers_ref[sid]
 		if r != null and r.has_method("set_hull_tier"):
-			r.call("set_hull_tier", int(ship_data["hull_tier"]))
+			r.call("set_hull_tier", clampi(int(ship_data["hull_tier"]), 0, 5))
 
 
 func _on_ship_despawned(sid: int) -> void:
@@ -620,5 +655,11 @@ func _on_ship_damaged(sid: int, _damage: float, _new_hp: float, _max_hp: float, 
 
 
 func _on_ship_sunk(sid: int, _world_pos: Vector2, _faction: int, _killer_ship_id: int) -> void:
+	var ship: Node = all_ships_ref.get(sid, null)
+	if ship != null and is_instance_valid(ship):
+		ship.set("is_sunk", true)
+	var r: Node2D = ship_renderers_ref.get(sid, null)
+	if r != null and is_instance_valid(r) and r.has_method("set_sunk"):
+		r.call("set_sunk", true)
 	if sid == player_ship_id and _bus() != null:
-		_bus().notification_posted.emit("Dein Schiff ist gesunken! Rückkehr nach Port Tortuga...", "combat")
+		_bus().notification_posted.emit("Dein Schiff ist gesunken! (-20 Gold) • Rückkehr zum Hafen in 10s...", "combat")

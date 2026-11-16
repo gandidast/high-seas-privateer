@@ -17,7 +17,41 @@ const GHOST_WRECK_ITEMS: Array[String] = [
 	"crows_nest_1x2",
 	"gunner_quarters_2x2",
 	"carpenter_workshop_2x2",
-	"iron_ram_1x2"
+	"iron_ram_1x2",
+	"organ_gun_2x2",
+	"pitch_mortar_2x2",
+	"bow_chaser_1x2"
+]
+
+const TIER_01_GEAR: Array[String] = [
+	"swivel_gun_1x2",
+	"chain_launcher_2x1",
+	"carronade_2x1",
+	"powder_barrel_1x1",
+	"silk_top_sail_1x2",
+	"crows_nest_1x2"
+]
+
+const TIER_23_GEAR: Array[String] = [
+	"bronze_cannon_2x2",
+	"long_culverin_1x3",
+	"organ_gun_2x2",
+	"pitch_mortar_2x2",
+	"greek_fire_2x1",
+	"harpoon_ballista_2x1",
+	"bow_chaser_1x2",
+	"gunner_quarters_2x2",
+	"carpenter_workshop_2x2"
+]
+
+const TIER_45_GEAR: Array[String] = [
+	"twin_cannon_2x3",
+	"mortar_cannon_2x2",
+	"pitch_mortar_2x2",
+	"organ_gun_2x2",
+	"bow_chaser_1x2",
+	"alchemist_powder_1x1",
+	"storm_sails_2x2"
 ]
 
 var is_authoritative: bool = true
@@ -27,7 +61,7 @@ var sync_revision: int = 1
 
 var _next_drop_id: int = 1
 var _flotsam_timer: float = 12.0
-var _ship_meta: Dictionary = {} # ship_id (int) -> { "hull_tier": int, "is_treasure_galleon": bool }
+var _ship_meta: Dictionary = {} # ship_id (int) -> { "hull_tier": int, "is_treasure_galleon": bool, "is_bounty_boss": bool }
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _item_db_script: Script = null
 
@@ -127,7 +161,7 @@ func spawn_salvage_target(world_pos: Vector2, quest_id: String) -> Contracts.Loo
 	var relic := _create_item_by_id("salvage_relic_1x2", Contracts.ItemAffix.MASTERWORK)
 	if relic != null:
 		drop.items.append(relic)
-	var extra := _create_random_item(true)
+	var extra := _create_random_item(false)
 	if extra != null:
 		drop.items.append(extra)
 
@@ -145,7 +179,13 @@ func spawn_loot_drop(
 	return spawn_ship_wreck_loot(world_pos, faction_or_tier)
 
 
-func spawn_ship_wreck_loot(world_pos: Vector2, faction: int, is_treasure_galleon: bool = false) -> Contracts.LootDropData:
+func spawn_ship_wreck_loot(
+	world_pos: Vector2,
+	faction: int,
+	is_treasure_galleon: bool = false,
+	hull_tier: int = 0,
+	is_bounty_boss: bool = false
+) -> Contracts.LootDropData:
 	var drop := Contracts.LootDropData.new()
 	drop.drop_id = _next_drop_id
 	_next_drop_id += 1
@@ -153,34 +193,71 @@ func spawn_ship_wreck_loot(world_pos: Vector2, faction: int, is_treasure_galleon
 	drop.is_salvage_target = false
 	drop.lifetime = 210.0
 
-	var item_count: int = _rng.randi_range(1, 3)
-	if is_treasure_galleon:
-		drop.gold = _rng.randi_range(180, 280)
-		item_count = 2
-		var chest := _create_item_by_id("royal_treasure_2x2", Contracts.ItemAffix.MASTERWORK)
-		if chest != null:
-			drop.items.append(chest)
-	else:
-		match faction:
-			Contracts.ShipFaction.MERCHANT:
-				drop.gold = _rng.randi_range(65, 130)
-				item_count = _rng.randi_range(2, 3)
-			Contracts.ShipFaction.NAVY:
-				drop.gold = _rng.randi_range(110, 195)
-				item_count = _rng.randi_range(2, 3)
-				var navy_gear_id: String = GHOST_WRECK_ITEMS[_rng.randi_range(0, GHOST_WRECK_ITEMS.size() - 1)]
-				var navy_item := _create_item_by_id(navy_gear_id, Contracts.ItemAffix.MASTERWORK)
-				if navy_item != null:
-					drop.items.append(navy_item)
-			Contracts.ShipFaction.PIRATE:
-				drop.gold = _rng.randi_range(40, 95)
-			_:
-				drop.gold = _rng.randi_range(25, 60)
+	var eff_tier: int = clampi(hull_tier, 0, 5)
+	var is_high_tier: bool = (
+		eff_tier >= Contracts.ShipClass.CORSAIR_CLIPPER
+		or faction == Contracts.ShipFaction.NAVY
+		or is_bounty_boss
+		or is_treasure_galleon
+	)
+	var extra_count: int = 1
 
-	for _i in range(item_count):
-		var item := _create_random_item(true)
-		if item != null:
-			drop.items.append(item)
+	if is_high_tier:
+		if is_treasure_galleon:
+			drop.gold = _rng.randi_range(240, 360)
+			var chest := _create_item_by_id("royal_treasure_2x2", Contracts.ItemAffix.MASTERWORK)
+			if chest != null:
+				drop.items.append(chest)
+		elif is_bounty_boss:
+			drop.gold = _rng.randi_range(165, 260)
+		elif faction == Contracts.ShipFaction.NAVY:
+			drop.gold = _rng.randi_range(135, 220)
+		else:
+			drop.gold = _rng.randi_range(125, 205)
+
+		var elite_id: String = TIER_45_GEAR[_rng.randi_range(0, TIER_45_GEAR.size() - 1)]
+		var elite_item := _create_item_by_id(elite_id, _roll_high_tier_affix(true))
+		if elite_item != null:
+			drop.items.append(elite_item)
+		extra_count = _rng.randi_range(1, 2)
+		for _i in range(extra_count):
+			var bonus := _create_random_item(false)
+			if bonus != null:
+				drop.items.append(bonus)
+
+	elif eff_tier >= Contracts.ShipClass.BRIGANTINE:
+		drop.gold = _rng.randi_range(95, 170) if faction == Contracts.ShipFaction.MERCHANT else _rng.randi_range(85, 155)
+		var rare_id: String = TIER_23_GEAR[_rng.randi_range(0, TIER_23_GEAR.size() - 1)]
+		var rare_item := _create_item_by_id(rare_id, _roll_high_tier_affix(false))
+		if rare_item != null:
+			drop.items.append(rare_item)
+		extra_count = _rng.randi_range(1, 2)
+		for _i in range(extra_count):
+			var bonus := _create_random_item(faction == Contracts.ShipFaction.MERCHANT)
+			if bonus != null:
+				drop.items.append(bonus)
+
+	else:
+		var is_merchant: bool = (faction == Contracts.ShipFaction.MERCHANT)
+		drop.gold = _rng.randi_range(65, 130) if is_merchant else _rng.randi_range(45, 100)
+		var gear_chance: float = 0.55 if is_merchant else 0.78
+		if _rng.randf() < gear_chance:
+			var low_id: String = TIER_01_GEAR[_rng.randi_range(0, TIER_01_GEAR.size() - 1)]
+			var low_afx: int = Contracts.ItemAffix.MASTERWORK if _rng.randf() < 0.25 else Contracts.ItemAffix.STANDARD
+			var gear_item := _create_item_by_id(low_id, low_afx)
+			if gear_item != null:
+				drop.items.append(gear_item)
+		extra_count = _rng.randi_range(1, 2)
+		for _i in range(extra_count):
+			var want_cargo: bool = is_merchant or (_rng.randf() < 0.30)
+			var extra := _create_random_item(want_cargo)
+			if extra != null:
+				drop.items.append(extra)
+
+	if drop.items.is_empty():
+		var fallback_item := _create_item_by_id(TIER_01_GEAR[0], Contracts.ItemAffix.STANDARD)
+		if fallback_item != null:
+			drop.items.append(fallback_item)
 
 	return _register_new_drop(drop)
 
@@ -217,7 +294,7 @@ func spawn_kraken_loot(world_pos: Vector2) -> Contracts.LootDropData:
 	var trophy := _create_item_by_id("kraken_tentacle_trophy_2x2", Contracts.ItemAffix.MASTERWORK)
 	if trophy != null:
 		drop.items.append(trophy)
-	var rare_id: String = GHOST_WRECK_ITEMS[_rng.randi_range(0, GHOST_WRECK_ITEMS.size() - 1)]
+	var rare_id: String = TIER_45_GEAR[_rng.randi_range(0, TIER_45_GEAR.size() - 1)]
 	var rare_gear := _create_item_by_id(rare_id, Contracts.ItemAffix.CURSED)
 	if rare_gear != null:
 		drop.items.append(rare_gear)
@@ -313,7 +390,8 @@ func _grant_loot_to_grid(drop: Contracts.LootDropData, player_grid: Node) -> voi
 func _on_ship_spawned(ship_id: int, ship_data: Dictionary) -> void:
 	_ship_meta[ship_id] = {
 		"hull_tier": int(ship_data.get("hull_tier", 0)),
-		"is_treasure_galleon": bool(ship_data.get("is_treasure_galleon", false))
+		"is_treasure_galleon": bool(ship_data.get("is_treasure_galleon", false)),
+		"is_bounty_boss": bool(ship_data.get("is_bounty_boss", false))
 	}
 
 
@@ -324,7 +402,13 @@ func _on_ship_sunk(ship_id: int, world_pos: Vector2, faction: int, _killer_ship_
 	_ship_meta.erase(ship_id)
 	if faction == Contracts.ShipFaction.PLAYER:
 		return
-	spawn_ship_wreck_loot(world_pos, faction, bool(meta.get("is_treasure_galleon", false)))
+	spawn_ship_wreck_loot(
+		world_pos,
+		faction,
+		bool(meta.get("is_treasure_galleon", false)),
+		int(meta.get("hull_tier", 0)),
+		bool(meta.get("is_bounty_boss", false))
+	)
 
 
 func _on_fort_destroyed(_fort_id: int, world_pos: Vector2) -> void:
@@ -348,7 +432,7 @@ func _spawn_random_flotsam() -> void:
 
 	var item_count: int = _rng.randi_range(1, 2)
 	for _i in range(item_count):
-		var item := _create_random_item(true)
+		var item := _create_random_item(_rng.randf() < 0.45)
 		if item != null:
 			drop.items.append(item)
 
@@ -387,6 +471,21 @@ func _count_flotsam() -> int:
 		if d != null and not d.is_salvage_target:
 			cnt += 1
 	return cnt
+
+
+func _roll_high_tier_affix(elite: bool) -> int:
+	var roll: float = _rng.randf()
+	if elite:
+		if roll < 0.45:
+			return Contracts.ItemAffix.MASTERWORK
+		if roll < 0.72:
+			return Contracts.ItemAffix.CURSED
+		return Contracts.ItemAffix.STANDARD
+	if roll < 0.40:
+		return Contracts.ItemAffix.MASTERWORK
+	if roll < 0.52:
+		return Contracts.ItemAffix.CURSED
+	return Contracts.ItemAffix.STANDARD
 
 
 func _create_random_item(include_cargo: bool) -> Contracts.GridItemData:

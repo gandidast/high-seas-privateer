@@ -75,7 +75,7 @@ func _boot_headless_server() -> void:
 	var port: int = NetworkManager.get_cli_port(Contracts.SERVER_DEFAULT_PORT)
 	world_seed = NetworkManager.get_cli_seed(Contracts.DEFAULT_WORLD_SEED)
 	_init_simulation(world_seed, true)
-	ai_director.populate_initial_fleet(4, 4)
+	ai_director.populate_initial_fleet(3, 3)
 	loot_system.spawn_initial_flotsam(world_map, 10)
 
 	network_manager.bind_simulation(world_map, combat_system, loot_system, ai_director, all_ships)
@@ -117,6 +117,7 @@ func _on_server_peer_joined(peer_id: int, captain_name: String) -> void:
 
 
 func _on_server_peer_left(peer_id: int) -> void:
+	_server_respawn_timers.erase(peer_id)
 	combat_system.unregister_ship(peer_id)
 	var ship: Node = all_ships.get(peer_id, null)
 	all_ships.erase(peer_id)
@@ -212,12 +213,12 @@ func _on_solo_pressed() -> void:
 
 	player_ship_id = 1
 	_spawn_local_player(player_ship_id, "Schaluppe Morgenstern", true)
-	ai_director.populate_initial_fleet(4, 4)
+	ai_director.populate_initial_fleet(3, 3)
 	loot_system.spawn_initial_flotsam(world_map, 10)
 	_init_ui_layers()
 	game_started = true
 	if _bus() != null:
-		_bus().notification_posted.emit("Leinen los! W/S Segel, A/D Ruder, Q/E Breitseite.", "system")
+		_bus().notification_posted.emit("Leinen los! W/S Segel, A/D Ruder, Q/E Breitseite, Space Bug.", "system")
 
 
 func _on_reconnect_pressed() -> void:
@@ -399,19 +400,29 @@ func _step_headless_server(delta: float) -> void:
 			continue
 		if bool(ship.get("is_sunk")):
 			var pid: int = int(sid_var)
-			var r_timer: float = float(_server_respawn_timers.get(pid, 3.0)) - delta
-			if r_timer <= 0.0:
-				_server_respawn_timers.erase(pid)
-				var islands: Array = Contracts.get_islands(world_seed)
-				var respawn_pos: Vector2 = islands[0].harbor_pos if not islands.is_empty() else Vector2.ZERO
-				ship.set("world_pos", respawn_pos)
-				ship.set("velocity", Vector2.ZERO)
-				ship.set("speed", 0.0)
-				ship.set("sail_state", Contracts.SailState.ANCHORED)
-				ship.set("is_sunk", false)
-				ship.set("hp", float(ship.get("max_hp")))
+			if not _server_respawn_timers.has(pid):
+				_server_respawn_timers[pid] = 10.0
+				if _bus() != null:
+					_bus().player_death_penalty.emit(pid, 20, 10.0)
 			else:
-				_server_respawn_timers[pid] = r_timer
+				var r_timer: float = float(_server_respawn_timers[pid]) - delta
+				if r_timer <= 0.0:
+					_server_respawn_timers.erase(pid)
+					var harbor_info: Dictionary = _get_safe_respawn_harbor(ship.get("world_pos"))
+					var respawn_pos: Vector2 = harbor_info["pos"]
+					ship.set("world_pos", respawn_pos)
+					ship.set("velocity", Vector2.ZERO)
+					ship.set("speed", 0.0)
+					ship.set("sail_state", Contracts.SailState.ANCHORED)
+					ship.set("is_sunk", false)
+					ship.set("burn_timer", 0.0)
+					ship.set("burn_dps", 0.0)
+					ship.set("chain_slow_timer", 0.0)
+					ship.set("chain_slow_strength", 0.0)
+					ship.set("current_harbor_index", int(harbor_info["index"]))
+					ship.set("hp", float(ship.get("max_hp")))
+				else:
+					_server_respawn_timers[pid] = r_timer
 			continue
 		ship.call("step_physics", delta, float(ship.get_meta("net_steer", 0.0)), world_map)
 
@@ -448,6 +459,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		_trigger_player_broadside(false)
 	elif event.is_action_pressed("fire_starboard"):
 		_trigger_player_broadside(true)
+	elif event.is_action_pressed("fire_bow"):
+		_trigger_player_bow()
 	elif event.is_action_pressed("interact"):
 		var h_idx: int = int(player_ship.get("current_harbor_index"))
 		if h_idx >= 0 and _bus() != null:
@@ -474,6 +487,17 @@ func _trigger_player_broadside(is_starboard: bool) -> void:
 		combat_system.fire_broadside(player_ship_id, is_starboard)
 
 
+func _trigger_player_bow() -> void:
+	if network_manager.current_mode == NetworkManager.Mode.CLIENT:
+		if combat_system != null and combat_system.has_method("get_bow_cone"):
+			var bow_cone: Dictionary = combat_system.call("get_bow_cone", player_ship_id)
+			if int(bow_cone.get("total_count", 0)) > 0 and float(bow_cone.get("ready_ratio", 0.0)) >= 0.99:
+				_client_sync.trigger_local_bow_fire_anticipation(player_ship_id)
+		network_manager.send_fire_bow_request()
+	elif combat_system != null and combat_system.has_method("fire_bow"):
+		combat_system.call("fire_bow", player_ship_id)
+
+
 func _update_ocean_and_aim_cone() -> void:
 	if ocean_renderer != null and pixel_camera != null:
 		ocean_renderer.call("set_camera_center", pixel_camera.global_position)
@@ -483,11 +507,17 @@ func _update_ocean_and_aim_cone() -> void:
 		return
 	var mouse_world: Vector2 = _get_world_mouse_position()
 	var local_mouse: Vector2 = (mouse_world - (player_ship.get("world_pos") as Vector2)).rotated(-float(player_ship.get("heading")))
-	if local_mouse.length() > 14.0 and local_mouse.length() < 320.0 and absf(local_mouse.y) > 8.0:
-		var cone: Dictionary = combat_system.get_broadside_cone(player_ship_id, local_mouse.y > 0.0)
-		if int(cone.get("total_count", 0)) > 0:
-			fx_manager.call("set_broadside_aim_cone", cone["origin"], cone["dir"], float(cone["range"]), float(cone["half_angle_rad"]), true)
-			return
+	if local_mouse.length() > 14.0 and local_mouse.length() < 340.0:
+		if local_mouse.x > 12.0 and absf(local_mouse.y) <= local_mouse.x * 0.55 and combat_system.has_method("get_bow_cone"):
+			var bow_cone: Dictionary = combat_system.call("get_bow_cone", player_ship_id)
+			if int(bow_cone.get("total_count", 0)) > 0:
+				fx_manager.call("set_broadside_aim_cone", bow_cone["origin"], bow_cone["dir"], float(bow_cone["range"]), float(bow_cone["half_angle_rad"]), true)
+				return
+		if absf(local_mouse.y) > 8.0 and local_mouse.length() < 320.0:
+			var cone: Dictionary = combat_system.get_broadside_cone(player_ship_id, local_mouse.y > 0.0)
+			if int(cone.get("total_count", 0)) > 0:
+				fx_manager.call("set_broadside_aim_cone", cone["origin"], cone["dir"], float(cone["range"]), float(cone["half_angle_rad"]), true)
+				return
 	fx_manager.call("set_broadside_aim_cone", Vector2.ZERO, Vector2.RIGHT, 0.0, 0.0, false)
 
 
@@ -504,22 +534,46 @@ func _get_world_mouse_position() -> Vector2:
 
 func _step_player_respawn(delta: float) -> void:
 	if _respawn_timer < 0.0:
-		_respawn_timer = 2.5
+		_respawn_timer = 10.0
+		if _bus() != null:
+			_bus().player_death_penalty.emit(player_ship_id, 20, 10.0)
 	_respawn_timer -= delta
 	if _respawn_timer <= 0.0:
 		_respawn_timer = -1.0
-		var islands: Array = Contracts.get_islands(world_seed)
-		var respawn_pos: Vector2 = islands[0].harbor_pos if not islands.is_empty() else Vector2.ZERO
+		var harbor_info: Dictionary = _get_safe_respawn_harbor(player_ship.get("world_pos"))
+		var respawn_pos: Vector2 = harbor_info["pos"]
 		player_ship.set("world_pos", respawn_pos)
 		player_ship.set("velocity", Vector2.ZERO)
 		player_ship.set("speed", 0.0)
 		player_ship.set("sail_state", Contracts.SailState.ANCHORED)
 		player_ship.set("is_sunk", false)
+		player_ship.set("burn_timer", 0.0)
+		player_ship.set("burn_dps", 0.0)
+		player_ship.set("chain_slow_timer", 0.0)
+		player_ship.set("chain_slow_strength", 0.0)
+		player_ship.set("current_harbor_index", int(harbor_info["index"]))
 		var mhp: float = float(player_ship.get("max_hp"))
 		player_ship.set("hp", mhp)
+		if ship_renderers.has(player_ship_id) and is_instance_valid(ship_renderers[player_ship_id]):
+			var r: Node2D = ship_renderers[player_ship_id]
+			if r.has_method("set_sunk"):
+				r.call("set_sunk", false)
 		if _bus() != null:
 			_bus().ship_state_updated.emit(player_ship_id, respawn_pos, float(player_ship.get("heading")), 0.0, Contracts.SailState.ANCHORED, mhp, mhp)
-			_bus().notification_posted.emit("In Port Tortuga wieder flottgemacht!", "system")
+			_bus().notification_posted.emit("In %s wieder flottgemacht!" % str(harbor_info["name"]), "system")
+
+
+func _get_safe_respawn_harbor(from_pos: Vector2) -> Dictionary:
+	if world_map != null and world_map.has_method("get_nearest_safe_harbor"):
+		var safe_isl: Variant = world_map.call("get_nearest_safe_harbor", from_pos)
+		if safe_isl is Contracts.IslandData:
+			var isl := safe_isl as Contracts.IslandData
+			return { "index": isl.index, "name": isl.name, "pos": isl.harbor_pos }
+	var islands: Array = Contracts.get_islands(world_seed)
+	if not islands.is_empty():
+		var isl0: Contracts.IslandData = islands[0]
+		return { "index": isl0.index, "name": isl0.name, "pos": isl0.harbor_pos }
+	return { "index": 0, "name": "Port Tortuga", "pos": Vector2.ZERO }
 
 
 func _on_network_snapshot_received(snapshot: Dictionary) -> void:
@@ -560,10 +614,13 @@ func _combined_ships_dict() -> Dictionary:
 
 
 func _is_ui_open() -> bool:
-	return (cargo_grid_ui != null and cargo_grid_ui.visible) or (harbor_ui != null and harbor_ui.visible)
+	var map_open: bool = hud_overlay != null and hud_overlay.has_method("is_world_map_open") and bool(hud_overlay.call("is_world_map_open"))
+	return map_open or (cargo_grid_ui != null and cargo_grid_ui.visible) or (harbor_ui != null and harbor_ui.visible)
 
 
 func _clear_game_world() -> void:
+	_respawn_timer = -1.0
+	_server_respawn_timers.clear()
 	_client_sync.reset()
 	for node in [ai_director, loot_system, combat_system, world_map, player_grid]:
 		if node != null:
