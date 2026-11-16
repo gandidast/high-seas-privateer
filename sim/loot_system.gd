@@ -5,10 +5,10 @@ extends Node
 ## salvage quest targets, and incremental delta/revision sync. 100% headless-safe.
 
 const ITEM_DB_PATH: String = "res://sim/item_database.gd"
-const COLLECT_RADIUS: float = 32.0
-const INTERACT_COLLECT_RADIUS: float = 48.0
-const MAX_FLOTSAM_COUNT: int = 14
-const FLOTSAM_SPAWN_INTERVAL: float = 20.0
+const COLLECT_RADIUS: float = 44.0
+const INTERACT_COLLECT_RADIUS: float = 56.0
+const MAX_FLOTSAM_COUNT: int = 4
+const FLOTSAM_SPAWN_INTERVAL: float = 50.0
 
 const GHOST_WRECK_ITEMS: Array[String] = [
 	"greek_fire_2x1",
@@ -135,7 +135,7 @@ func spawn_ghost_wreck(world_pos: Vector2) -> Contracts.LootDropData:
 	drop.gold = _rng.randi_range(65, 125)
 	drop.is_salvage_target = false
 	drop.quest_id = "ghost_wreck"
-	drop.lifetime = 300.0
+	drop.lifetime = 65.0
 
 	var gear_count: int = _rng.randi_range(1, 2)
 	for _i in range(gear_count):
@@ -156,7 +156,7 @@ func spawn_salvage_target(world_pos: Vector2, quest_id: String) -> Contracts.Loo
 	drop.gold = _rng.randi_range(55, 95)
 	drop.is_salvage_target = true
 	drop.quest_id = quest_id
-	drop.lifetime = 900.0
+	drop.lifetime = 360.0
 
 	var relic := _create_item_by_id("salvage_relic_1x2", Contracts.ItemAffix.MASTERWORK)
 	if relic != null:
@@ -191,7 +191,7 @@ func spawn_ship_wreck_loot(
 	_next_drop_id += 1
 	drop.world_pos = _ensure_water_pos(world_pos)
 	drop.is_salvage_target = false
-	drop.lifetime = 210.0
+	drop.lifetime = 55.0
 
 	var eff_tier: int = clampi(hull_tier, 0, 5)
 	var is_high_tier: bool = (
@@ -269,7 +269,7 @@ func spawn_fort_loot(world_pos: Vector2) -> Contracts.LootDropData:
 	drop.world_pos = _ensure_water_pos(world_pos)
 	drop.gold = _rng.randi_range(150, 230)
 	drop.is_salvage_target = false
-	drop.lifetime = 300.0
+	drop.lifetime = 75.0
 
 	var chest := _create_item_by_id("royal_treasure_2x2", Contracts.ItemAffix.STANDARD)
 	if chest != null:
@@ -289,7 +289,7 @@ func spawn_kraken_loot(world_pos: Vector2) -> Contracts.LootDropData:
 	drop.world_pos = _ensure_water_pos(world_pos)
 	drop.gold = _rng.randi_range(280, 380)
 	drop.is_salvage_target = false
-	drop.lifetime = 360.0
+	drop.lifetime = 90.0
 
 	var trophy := _create_item_by_id("kraken_tentacle_trophy_2x2", Contracts.ItemAffix.MASTERWORK)
 	if trophy != null:
@@ -330,11 +330,10 @@ func step_loot(
 			to_remove.append(did)
 			continue
 
-		if not drop.is_salvage_target:
-			drop.lifetime -= delta
-			if drop.lifetime <= 0.0:
-				to_remove.append(did)
-				continue
+		drop.lifetime -= delta
+		if drop.lifetime <= 0.0:
+			to_remove.append(did)
+			continue
 
 		var radius: float = INTERACT_COLLECT_RADIUS if interact_pressed else COLLECT_RADIUS
 		var radius_sq: float = radius * radius
@@ -428,7 +427,7 @@ func _spawn_random_flotsam() -> void:
 	drop.world_pos = _pick_open_sea_position()
 	drop.gold = _rng.randi_range(15, 45)
 	drop.is_salvage_target = false
-	drop.lifetime = 240.0
+	drop.lifetime = 60.0
 
 	var item_count: int = _rng.randi_range(1, 2)
 	for _i in range(item_count):
@@ -451,11 +450,11 @@ func _pick_open_sea_position() -> Vector2:
 
 
 func _ensure_water_pos(pos: Vector2) -> Vector2:
-	if _get_depth(pos) > 0.08:
+	if _get_depth(pos) >= 0.20:
 		return pos
 	if world_map_ref != null and world_map_ref.has_method("find_open_water_near"):
-		return world_map_ref.call("find_open_water_near", pos, 0.16)
-	return pos + Contracts.get_coast_normal(pos) * 42.0
+		return world_map_ref.call("find_open_water_near", pos, 0.22)
+	return pos + Contracts.get_coast_normal(pos) * 56.0
 
 
 func _get_depth(pos: Vector2) -> float:

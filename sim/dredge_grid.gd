@@ -71,9 +71,10 @@ func get_slot_type(gx: int, gy: int) -> int:
 		return Contracts.SlotType.DECK_STARBOARD
 	if gx == w - 1 and gy >= 1 and gy <= h - 2 and gy >= (h - 1) / 2 and gy <= h / 2:
 		return Contracts.SlotType.BOW
-	var mast_w: int = clampi(w - 4, 2, 4)
-	var mast_x0: int = maxi(1, (w - mast_w) / 2)
-	var mast_x1: int = mini(w - 3, mast_x0 + mast_w - 1)
+	var is_clipper: bool = (hull_tier == Contracts.ShipClass.CORSAIR_CLIPPER)
+	var mast_w: int = 4 if is_clipper else clampi(w - 4, 2, 4)
+	var mast_x0: int = 1 if is_clipper else maxi(1, (w - mast_w) / 2)
+	var mast_x1: int = mini((w - 2) if is_clipper else (w - 3), mast_x0 + mast_w - 1)
 	var mast_y0: int = maxi(1, (h - 2) / 2)
 	var mast_y1: int = mini(h - 2, mast_y0 + 1)
 	if gx >= mast_x0 and gx <= mast_x1 and gy >= mast_y0 and gy <= mast_y1:

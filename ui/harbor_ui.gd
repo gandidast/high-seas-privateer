@@ -766,11 +766,26 @@ func _on_ship_sunk(ship_id: int, _world_pos: Vector2, _faction: int, _killer_shi
 func _on_loot_collected(drop_id: int, collector_ship_id: int, loot_data: Contracts.LootDropData) -> void:
 	if player_ship != null and collector_ship_id != int(player_ship.get("ship_id")):
 		return
-	if loot_data != null and loot_data.gold > 0:
-		_add_gold(loot_data.gold)
-		var bus := _bus()
-		if bus != null:
-			bus.notification_posted.emit("Beute geborgen: +%d Gold" % loot_data.gold, "loot")
+	if loot_data != null:
+		var nm: Node = _get_network_manager()
+		var is_mp_client: bool = (nm != null and int(nm.get("current_mode")) == NetworkManager.Mode.CLIENT)
+		if is_mp_client and player_grid != null and not loot_data.items.is_empty():
+			for item_var in loot_data.items:
+				if not (item_var is Contracts.GridItemData):
+					continue
+				var item: Contracts.GridItemData = item_var
+				var placed: bool = false
+				if player_grid.has_method("auto_place_item"):
+					placed = bool(player_grid.call("auto_place_item", item))
+				if not placed and player_grid.has_method("add_to_stash"):
+					player_grid.call("add_to_stash", item)
+		if loot_data.gold > 0:
+			_add_gold(loot_data.gold)
+			var bus := _bus()
+			if bus != null:
+				var item_cnt: int = loot_data.items.size()
+				var msg: String = "Beute geborgen: +%d Gold" % loot_data.gold if item_cnt <= 0 else "Beute geborgen: +%d Gold & %d Item(s)" % [loot_data.gold, item_cnt]
+				bus.notification_posted.emit(msg, "loot")
 	var to_complete: Array[String] = []
 	for q in active_quests:
 		if q.quest_type == Contracts.QuestType.SALVAGE and (q.target_drop_id == drop_id or (loot_data != null and loot_data.quest_id == q.id)):

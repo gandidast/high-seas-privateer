@@ -89,7 +89,7 @@ const SHIP_CLASS_SPECS: Dictionary = {
 	ShipClass.SCHOONER: {
 		"tier": ShipClass.SCHOONER,
 		"name": "Schoner",
-		"cost": 180,
+		"cost": 260,
 		"grid_cols": 6,
 		"grid_rows": 5,
 		"base_hp": 165.0,
@@ -105,7 +105,7 @@ const SHIP_CLASS_SPECS: Dictionary = {
 	ShipClass.BRIGANTINE: {
 		"tier": ShipClass.BRIGANTINE,
 		"name": "Brigg",
-		"cost": 380,
+		"cost": 650,
 		"grid_cols": 7,
 		"grid_rows": 5,
 		"base_hp": 225.0,
@@ -121,7 +121,7 @@ const SHIP_CLASS_SPECS: Dictionary = {
 	ShipClass.FRIGATE: {
 		"tier": ShipClass.FRIGATE,
 		"name": "Fregatte",
-		"cost": 780,
+		"cost": 1400,
 		"grid_cols": 8,
 		"grid_rows": 6,
 		"base_hp": 330.0,
@@ -137,7 +137,7 @@ const SHIP_CLASS_SPECS: Dictionary = {
 	ShipClass.CORSAIR_CLIPPER: {
 		"tier": ShipClass.CORSAIR_CLIPPER,
 		"name": "Kaper-Klipper",
-		"cost": 1100,
+		"cost": 2600,
 		"grid_cols": 6,
 		"grid_rows": 5,
 		"base_hp": 215.0,
@@ -153,7 +153,7 @@ const SHIP_CLASS_SPECS: Dictionary = {
 	ShipClass.WAR_GALLEON: {
 		"tier": ShipClass.WAR_GALLEON,
 		"name": "Kriegsgaleone",
-		"cost": 2400,
+		"cost": 4800,
 		"grid_cols": 10,
 		"grid_rows": 7,
 		"base_hp": 620.0,

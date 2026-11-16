@@ -52,6 +52,27 @@ func _ready() -> void:
 	z_index = 25
 	_connect_signals()
 
+
+func clear_all() -> void:
+	for entry_var in _loot_crates.values():
+		if entry_var is Dictionary:
+			var spr: Variant = entry_var.get("sprite", null)
+			if is_instance_valid(spr):
+				(spr as Node).queue_free()
+	_loot_crates.clear()
+	_projectiles.clear()
+	_particles.clear()
+	_rings.clear()
+	_ship_positions.clear()
+	_burning_ships.clear()
+	_harpoon_tethers.clear()
+	_lightning_bolts.clear()
+	_aim_cone_active = false
+	_bow_cone_active = false
+	_entities_renderer.forts.clear()
+	_entities_renderer.sea_monsters.clear()
+	queue_redraw()
+
 func _connect_signals() -> void:
 	var bus: Contracts = Contracts.bus()
 	if bus == null:
@@ -478,7 +499,7 @@ func _on_loot_spawned(loot_data: Contracts.LootDropData) -> void:
 	add_child(spr)
 	_loot_crates[loot_data.drop_id] = { "sprite": spr, "pos": loot_data.world_pos, "salvage": loot_data.is_salvage_target }
 
-func _on_loot_collected(drop_id: int, _collector_ship_id: int, loot_data: Contracts.LootDropData) -> void:
+func _on_loot_collected(drop_id: int, collector_ship_id: int, loot_data: Contracts.LootDropData) -> void:
 	var burst_pos: Vector2 = loot_data.world_pos if loot_data != null else Vector2.ZERO
 	if _loot_crates.has(drop_id):
 		burst_pos = _loot_crates[drop_id]["pos"]
@@ -487,6 +508,9 @@ func _on_loot_collected(drop_id: int, _collector_ship_id: int, loot_data: Contra
 			spr.queue_free()
 		_loot_crates.erase(drop_id)
 	if _is_near_camera(burst_pos, 160.0):
+		if collector_ship_id < 0:
+			_emit_ring(burst_pos, 3.0, 14.0, 0.35, Color(0.75, 0.90, 0.96, 0.55))
+			return
 		_emit_ring(burst_pos, 4.0, 22.0, 0.45, Color(0.98, 0.82, 0.25, 0.90))
 		var c := Color(1.0, 0.88, 0.35, 1.0)
 		_emit_burst(burst_pos, 10, 0.0, 18.0, 34.0, 4.0, 24.0, 44.0, 90.0, 0.42, 0.42, 2.0, 2.0, c, c, true)

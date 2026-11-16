@@ -374,7 +374,7 @@ func _bind_server_eventbus_relays() -> void:
 	bus.cannonball_impact.connect(_on_server_cannonball_impact)
 	bus.ship_sunk.connect(func(sid: int, pos: Vector2, fac: int, ksid: int): _relay_rpc("rpc_client_ship_sunk", [sid, pos, fac, ksid]))
 	bus.player_death_penalty.connect(func(sid: int, gold_lost: int, respawn_sec: float): _relay_rpc("rpc_client_player_death_penalty", [sid, gold_lost, respawn_sec]))
-	bus.loot_collected.connect(func(did: int, csid: int, ld: Contracts.LootDropData): _relay_rpc("rpc_client_loot_collected", [did, csid, ld.gold if ld != null else 0]))
+	bus.loot_collected.connect(_on_server_loot_collected)
 	bus.weather_changed.connect(func(ws: int, wi: float): _relay_rpc("rpc_client_weather_changed", [ws, wi]))
 	bus.wanted_level_changed.connect(func(lvl: int): _relay_rpc("rpc_client_wanted_level_changed", [lvl]))
 	bus.fort_damaged.connect(func(fid: int, hp: float, mhp: float, pos: Vector2): _relay_rpc("rpc_client_fort_damaged", [fid, hp, mhp, pos]))
@@ -863,13 +863,32 @@ func rpc_client_player_death_penalty(ship_id: int, gold_lost: int, respawn_sec: 
 		_bus().player_death_penalty.emit(ship_id, gold_lost, respawn_sec)
 
 
+func _on_server_loot_collected(drop_id: int, collector_ship_id: int, loot_data: Contracts.LootDropData) -> void:
+	var gold: int = loot_data.gold if loot_data != null else 0
+	var serialized_items: Array = []
+	if loot_data != null:
+		for item_var in loot_data.items:
+			if item_var is Contracts.GridItemData:
+				serialized_items.append((item_var as Contracts.GridItemData).to_dict())
+			elif item_var is Dictionary:
+				serialized_items.append(item_var)
+	_relay_rpc("rpc_client_loot_collected", [drop_id, collector_ship_id, gold, serialized_items])
+
+
 @rpc("authority", "reliable")
-func rpc_client_loot_collected(drop_id: int, collector_ship_id: int, gold: int) -> void:
-	if current_mode == Mode.CLIENT and collector_ship_id == local_peer_id and gold > 0 and _bus() != null:
+func rpc_client_loot_collected(drop_id: int, collector_ship_id: int, gold: int, serialized_items: Array = []) -> void:
+	if current_mode != Mode.CLIENT or _bus() == null:
+		return
+	if collector_ship_id == local_peer_id:
 		var dummy := Contracts.LootDropData.new()
 		dummy.drop_id = drop_id
 		dummy.gold = gold
+		for raw_item in serialized_items:
+			if raw_item is Dictionary:
+				dummy.items.append(Contracts.GridItemData.from_dict(raw_item))
 		_bus().loot_collected.emit(drop_id, collector_ship_id, dummy)
+	else:
+		_bus().loot_collected.emit(drop_id, collector_ship_id, null)
 
 
 @rpc("authority", "reliable")

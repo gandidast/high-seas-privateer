@@ -76,7 +76,7 @@ func _boot_headless_server() -> void:
 	world_seed = NetworkManager.get_cli_seed(Contracts.DEFAULT_WORLD_SEED)
 	_init_simulation(world_seed, true)
 	ai_director.populate_initial_fleet(3, 3)
-	loot_system.spawn_initial_flotsam(world_map, 10)
+	loot_system.spawn_initial_flotsam(world_map, 3)
 
 	network_manager.bind_simulation(world_map, combat_system, loot_system, ai_director, all_ships)
 	network_manager.peer_ship_joined.connect(_on_server_peer_joined)
@@ -214,7 +214,7 @@ func _on_solo_pressed() -> void:
 	player_ship_id = 1
 	_spawn_local_player(player_ship_id, "Schaluppe Morgenstern", true)
 	ai_director.populate_initial_fleet(3, 3)
-	loot_system.spawn_initial_flotsam(world_map, 10)
+	loot_system.spawn_initial_flotsam(world_map, 3)
 	_init_ui_layers()
 	game_started = true
 	if _bus() != null:
@@ -622,6 +622,8 @@ func _clear_game_world() -> void:
 	_respawn_timer = -1.0
 	_server_respawn_timers.clear()
 	_client_sync.reset()
+	if fx_manager != null and fx_manager.has_method("clear_all"):
+		fx_manager.call("clear_all")
 	for node in [ai_director, loot_system, combat_system, world_map, player_grid]:
 		if node != null:
 			if node.has_method("clear_all"):

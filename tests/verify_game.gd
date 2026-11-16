@@ -246,6 +246,21 @@ func _test_dredge_grid_rotation_synergy_and_stats() -> void:
 	_assert_true(grid.stash_items.size() > stash_before_downsize and (bow_gun in grid.stash_items), "Downsizing Frigate -> Corsair Clipper must evict out-of-bounds items to stash")
 	_assert_true(grid.current_stats.bow_cannons.is_empty(), "Evicted bow gun must no longer be compiled into active bow_cannons")
 	_assert_true(is_equal_approx(grid.current_stats.bow_reload_multiplier, 1.15), "Corsair Clipper must apply +15% reload_bonus (1.15)")
+	var clipper_mast_count: int = 0
+	for gy in range(grid.get_grid_height()):
+		for gx in range(grid.get_grid_width()):
+			if grid.get_slot_type(gx, gy) == Contracts.SlotType.MAST:
+				clipper_mast_count += 1
+	_assert_true(clipper_mast_count == 8, "CORSAIR_CLIPPER must have 8 MAST slots (got %d)" % clipper_mast_count)
+	var clipper_sail2: Contracts.GridItemData = ItemDatabase.create_item("storm_sails_2x2")
+	_assert_true(grid.place_item(clipper_sail2, 3, 1, false), "CORSAIR_CLIPPER must fit a second 2x2 sail in its 8 MAST slots")
+
+	# Verify strictly escalating ship class costs
+	var prev_cost: int = -1
+	for t_idx in range(6):
+		var c_val: int = int(Contracts.get_ship_class_spec(t_idx).get("cost", 0))
+		_assert_true(c_val > prev_cost, "ShipClass %d cost (%d) must exceed previous (%d)" % [t_idx, c_val, prev_cost])
+		prev_cost = c_val
 
 	# 7. Verify bow_chaser_1x2 also mounts cleanly on War Galleon (10x7) horizontally (8,3 rotated)
 	grid.set_hull_tier(Contracts.ShipClass.WAR_GALLEON)
