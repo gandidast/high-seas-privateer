@@ -122,11 +122,80 @@ func setup(
 	world_map_ref = p_world_map
 	ai_director_ref = p_ai_director
 	loot_system_ref = p_loot_system
+	current_island_index = -1
+	_last_shop_island_idx = -1
 	current_gold = p_starting_gold
 	owned_ship_tiers = { Contracts.ShipClass.SLOOP: true }
 	owned_ship_tiers[_get_player_hull_tier()] = true
+	active_quests.clear()
+	harbor_quests.clear()
+	harbor_shops.clear()
+	shop_refresh_times.clear()
 	_ensure_network_quest_signals()
 	_refresh_ui()
+
+
+func set_owned_ship_tiers(tiers_arr: Array) -> void:
+	owned_ship_tiers = { Contracts.ShipClass.SLOOP: true, _get_player_hull_tier(): true }
+	for t_var in tiers_arr:
+		var t_val: int = clampi(int(t_var), Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+		owned_ship_tiers[t_val] = true
+	if visible:
+		_refresh_header_and_shipyard()
+
+
+func get_owned_ship_tiers_array() -> Array:
+	var out: Array = []
+	for k in owned_ship_tiers.keys():
+		if bool(owned_ship_tiers[k]):
+			out.append(int(k))
+	out.sort()
+	return out
+
+
+func get_active_quests_dicts() -> Array:
+	var out: Array = []
+	for q in active_quests:
+		if q != null and not q.completed:
+			out.append(q.to_dict())
+	return out
+
+
+func restore_active_quests(raw_quests: Array, spawn_targets: bool = true) -> void:
+	active_quests.clear()
+	_ensure_network_quest_signals()
+	var nm: Node = _get_network_manager()
+	var is_client: bool = (nm != null and int(nm.get("current_mode")) == NetworkManager.Mode.CLIENT)
+	for raw_var in raw_quests:
+		if not (raw_var is Dictionary):
+			continue
+		var q: Contracts.QuestData = Contracts.QuestData.from_dict(raw_var)
+		if q.id.is_empty() or q.completed:
+			continue
+		q.target_ship_id = -1
+		q.target_drop_id = -1
+		if spawn_targets:
+			if q.quest_type == Contracts.QuestType.BOUNTY:
+				var boss_tier: int = Contracts.ShipClass.BRIGANTINE
+				if is_client:
+					if nm.has_method("send_bounty_quest_request"):
+						nm.call("send_bounty_quest_request", q.target_pos, q.cargo_item_id, boss_tier, q.id)
+				elif ai_director_ref != null:
+					q.target_ship_id = ai_director_ref.spawn_ai_ship(Contracts.ShipFaction.PIRATE, q.target_pos, true, q.cargo_item_id, boss_tier)
+			elif q.quest_type == Contracts.QuestType.SALVAGE:
+				if is_client:
+					if nm.has_method("send_salvage_quest_request"):
+						nm.call("send_salvage_quest_request", q.target_pos, q.id)
+				elif loot_system_ref != null:
+					var drop: Contracts.LootDropData = loot_system_ref.spawn_salvage_target(q.target_pos, q.id)
+					q.target_drop_id = drop.drop_id
+					q.target_pos = drop.world_pos
+		active_quests.append(q)
+	var bus := _bus()
+	if bus != null:
+		bus.quest_list_updated.emit(active_quests.duplicate())
+	if visible:
+		_refresh_quest_list()
 
 
 func set_gold(new_gold: int) -> void:

@@ -160,6 +160,7 @@ if ufw status 2>/dev/null | grep -q "Status: active"; then
 fi
 
 echo "=== [6/6] Enabling systemd service pirate-server.service & Caddy ==="
+mkdir -p /var/lib/pirate_game
 cat > /etc/systemd/system/pirate-server.service <<EOF
 [Unit]
 Description=High Seas Pixel Privateer Headless Dedicated Server
@@ -172,6 +173,7 @@ WorkingDirectory=${APP_DIR}
 Environment="GODOT_BIN=/usr/local/bin/godot"
 Environment="PORT=${PORT}"
 Environment="WORLD_SEED=${WORLD_SEED}"
+Environment="PIRATE_DATA_DIR=/var/lib/pirate_game"
 ExecStart=${APP_DIR}/deploy/start_server.sh
 Restart=always
 RestartSec=3

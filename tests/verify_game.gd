@@ -36,6 +36,7 @@ func _process(_delta: float) -> bool:
 	_test_dredge_grid_rotation_synergy_and_stats()
 	_test_combat_ai_rng_loot_and_quests()
 	_test_visual_pipeline_and_headless_server_boot()
+	_test_user_auth_and_save_persistence()
 
 	print("====================================================================")
 	if _failures.is_empty():
@@ -611,3 +612,153 @@ func _test_visual_pipeline_and_headless_server_boot() -> void:
 	main_node.queue_free()
 
 	print("  -> [PASS] 6-tier Sprite-Stacking, 27 Item Icons, 4-Quadrant Ocean, 5 Forts, Kraken & Headless Server Sync verified.")
+
+
+func _test_user_auth_and_save_persistence() -> void:
+	print("[TEST 5/5] SaveStore Auth (Register/Login/Token), Ship/Grid/Gold Save Roundtrip & StartMenuUI...")
+	var save_store_script: Script = load("res://sim/save_store.gd") as Script
+	var test_id: int = Time.get_ticks_usec()
+	var test_dir: String = "user://test_accounts_%d" % test_id
+	var test_solo: String = "user://test_solo_%d.json" % test_id
+	var store = save_store_script.new(test_dir, test_solo)
+
+	# 1. Validation rules
+	_assert_true(not bool(save_store_script.call("validate_username", "ab")["ok"]), "Username < 3 chars must fail")
+	_assert_true(not bool(save_store_script.call("validate_username", "bad/name")["ok"]), "Username with '/' must fail")
+	_assert_true(bool(save_store_script.call("validate_username", "Käptn_Bob")["ok"]), "Valid username must pass")
+	_assert_true(not bool(save_store_script.call("validate_password", "12")["ok"]), "Password < 3 chars must fail")
+	_assert_true(bool(save_store_script.call("validate_password", "123")["ok"]), "Simple 3+ char password must pass")
+
+	# 2. Register, duplicate block, wrong password, login, token login
+	var reg_ok: Dictionary = store.register_account("BlackBeard", "rum123")
+	_assert_true(bool(reg_ok.get("ok", false)), "First registration must succeed")
+	var tok1: String = str(reg_ok.get("session_token", ""))
+	_assert_true(not tok1.is_empty(), "Registration must issue non-empty session_token")
+
+	var reg_dup: Dictionary = store.register_account("blackbeard", "other")
+	_assert_true(not bool(reg_dup.get("ok", false)), "Duplicate case-insensitive registration must be rejected")
+
+	var bad_pw: Dictionary = store.login_account("BlackBeard", "wrong")
+	_assert_true(not bool(bad_pw.get("ok", false)), "Wrong password login must be rejected")
+
+	var login_ok: Dictionary = store.login_account("blackbeard", "rum123")
+	_assert_true(bool(login_ok.get("ok", false)), "Valid login must succeed case-insensitively")
+	var tok2: String = str(login_ok.get("session_token", ""))
+	_assert_true(not tok2.is_empty(), "Login must return valid session_token")
+
+	var tok_ok: Dictionary = store.login_with_token("BlackBeard", tok2)
+	_assert_true(bool(tok_ok.get("ok", false)), "Valid token login must succeed")
+	var tok_bad: Dictionary = store.login_with_token("BlackBeard", "forged_token")
+	_assert_true(not bool(tok_bad.get("ok", false)) and bool(tok_bad.get("clear_token", false)), "Invalid token login must fail with clear_token=true")
+
+	# 3. Full ship/grid/gold/quest save roundtrip
+	var p_grid := DredgeGrid.new()
+	p_grid.ship_id = 77
+	p_grid.set_hull_tier(Contracts.ShipClass.FRIGATE)
+	p_grid.populate_starter_loadout()
+	var bonus_gun := ItemDatabase.create_item("carronade_2x1", Contracts.ItemAffix.MASTERWORK)
+	p_grid.auto_place_item(bonus_gun)
+
+	var q := Contracts.QuestData.new()
+	q.id = "q_test_deliv"
+	q.quest_type = Contracts.QuestType.DELIVERY
+	q.title = "Eilfracht nach San Aurelio"
+	q.target_island_idx = 2
+	q.reward_gold = 185
+
+	var custom_save: Dictionary = {
+		"gold": 2450,
+		"hull_tier": Contracts.ShipClass.FRIGATE,
+		"owned_ship_tiers": [Contracts.ShipClass.SLOOP, Contracts.ShipClass.FRIGATE],
+		"hp": 275.5,
+		"world_x": 420.0,
+		"world_y": -310.0,
+		"heading": 1.25,
+		"has_saved_pos": true,
+		"grid": p_grid.to_dict(),
+		"active_quests": [q.to_dict()]
+	}
+	_assert_true(store.update_account_save("blackbeard", custom_save), "Account save update must succeed")
+
+	var reloaded_acct: Dictionary = store.login_with_token("BlackBeard", tok2)
+	var loaded_save: Dictionary = reloaded_acct.get("save_data", {})
+	_assert_true(int(loaded_save.get("gold", 0)) == 2450, "Loaded account gold must equal 2450")
+	_assert_true(int(loaded_save.get("hull_tier", 0)) == Contracts.ShipClass.FRIGATE, "Loaded hull_tier must equal FRIGATE")
+	_assert_true(Contracts.ShipClass.FRIGATE in loaded_save.get("owned_ship_tiers", []), "Loaded owned_ship_tiers must retain FRIGATE")
+	_assert_true(is_equal_approx(float(loaded_save.get("hp", 0.0)), 275.5), "Loaded HP must match saved HP")
+	_assert_true((loaded_save.get("active_quests", []) as Array).size() == 1, "Loaded active_quests must persist")
+
+	var restored_grid := DredgeGrid.new()
+	restored_grid.from_dict(loaded_save.get("grid", {}))
+	_assert_true(restored_grid.hull_tier == Contracts.ShipClass.FRIGATE, "Restored DredgeGrid must keep FRIGATE tier")
+	_assert_true(restored_grid.placed_items.size() == p_grid.placed_items.size(), "Restored DredgeGrid must keep all placed items")
+	p_grid.free()
+	restored_grid.free()
+
+	# 4. Solo save/load/clear
+	_assert_true(not store.has_solo_save(), "Solo save must not exist initially")
+	_assert_true(store.save_solo(custom_save) and store.has_solo_save(), "Solo save must write file")
+	var solo_loaded: Dictionary = store.load_solo()
+	_assert_true(int(solo_loaded.get("gold", 0)) == 2450, "Solo save must restore gold")
+	store.clear_solo_save()
+	_assert_true(not store.has_solo_save(), "clear_solo_save() must remove solo save file")
+
+	# 5. Server spawn from saved profile + ServerConfig + StartMenuUI first-start auth gate
+	var main_srv := Main.new()
+	root.add_child(main_srv)
+	main_srv.is_headless_server = true
+	main_srv._init_simulation(Contracts.DEFAULT_WORLD_SEED, true)
+	main_srv._on_server_peer_joined_with_save(9001, "BlackBeard", loaded_save)
+	var restored_srv_ship: Node = main_srv.all_ships.get(9001, null)
+	_assert_true(restored_srv_ship != null, "Server must spawn ship from saved account profile")
+	_assert_true(int(restored_srv_ship.get("hull_tier")) == Contracts.ShipClass.FRIGATE, "Server ship must restore FRIGATE hull_tier")
+	_assert_true(is_equal_approx(float(restored_srv_ship.get("hp")), 275.5), "Server ship must restore saved HP")
+	_assert_true((restored_srv_ship.get("world_pos") as Vector2).distance_to(Vector2(420.0, -310.0)) < 1.0, "Server ship must restore saved world_pos")
+	main_srv._clear_game_world()
+	main_srv.queue_free()
+
+	var srv_cfg: Script = load("res://net/server_config.gd") as Script
+	var prev_user: String = str(srv_cfg.call("load_mp_username"))
+	var prev_tok: String = str(srv_cfg.call("load_mp_session_token"))
+	var prev_srv: String = str(srv_cfg.call("load_mp_auth_server"))
+	var prev_local_u: String = str(srv_cfg.call("load_local_username"))
+	var prev_local_tok: String = str(srv_cfg.call("load_local_session_token"))
+	srv_cfg.call("clear_mp_auth", false)
+	srv_cfg.call("clear_local_auth", false)
+	var start_ui := StartMenuUI.new()
+	root.add_child(start_ui)
+	_assert_true(start_ui._auth_form_box.visible and not start_ui._logged_in_box.visible, "StartMenuUI must require Username+Password form on first MP start")
+	_assert_true(not start_ui._local_auth_box.visible, "Optional local login box must stay collapsed by default for 1-click Solo")
+	start_ui._on_solo_account_btn_pressed()
+	_assert_true(start_ui._local_auth_box.visible, "Clicking optional local account toggle must reveal local login form")
+	start_ui._local_store = store
+	start_ui._local_username_input.text = "BlackBeard"
+	start_ui._local_password_input.text = "rum123"
+	start_ui._submit_local_credentials(false)
+	_assert_true(bool(srv_cfg.call("has_local_auth")) and not start_ui._local_auth_box.visible, "Optional local login must load account save and collapse form")
+	start_ui._on_solo_account_btn_pressed()
+	_assert_true(not bool(srv_cfg.call("has_local_auth")), "Local logout must return Solo to optional anonymous mode")
+	srv_cfg.call("save_mp_auth", "TestCap", "tok_xyz", start_ui.get_url_text())
+	start_ui.refresh_menu_state()
+	_assert_true(not start_ui._auth_form_box.visible and start_ui._logged_in_box.visible, "StartMenuUI must show remembered account after login")
+	start_ui._on_logout_pressed()
+	_assert_true(start_ui._auth_form_box.visible and not start_ui._logged_in_box.visible, "Logout must return StartMenuUI to Username+Password form")
+	start_ui.queue_free()
+	if not prev_user.is_empty() and not prev_tok.is_empty() and not prev_srv.is_empty():
+		srv_cfg.call("save_mp_auth", prev_user, prev_tok, prev_srv)
+	else:
+		srv_cfg.call("clear_mp_auth", false)
+	if not prev_local_u.is_empty() and not prev_local_tok.is_empty():
+		srv_cfg.call("save_local_auth", prev_local_u, prev_local_tok)
+	else:
+		srv_cfg.call("clear_local_auth", false)
+
+	# Cleanup temp test directory
+	var abs_test_dir: String = ProjectSettings.globalize_path(test_dir)
+	var dir_acc := DirAccess.open(abs_test_dir)
+	if dir_acc != null:
+		for fname in dir_acc.get_files():
+			dir_acc.remove(fname)
+		DirAccess.remove_absolute(abs_test_dir)
+
+	print("  -> [PASS] SaveStore auth, ship/grid/gold/quest save roundtrip, server restore & StartMenuUI auth gate verified.")

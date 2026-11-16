@@ -6,9 +6,12 @@ extends Node
 
 signal server_started(port: int)
 signal client_joined(local_ship_id: int, world_seed: int)
+signal client_joined_with_save(local_ship_id: int, world_seed: int, display_name: String, session_token: String, save_data: Dictionary)
+signal auth_failed(reason: String, clear_saved_auth: bool)
 signal client_disconnected_from_server(reason: String)
 signal snapshot_received(snapshot: Dictionary)
 signal peer_ship_joined(peer_id: int, captain_name: String)
+signal peer_ship_joined_with_save(peer_id: int, captain_name: String, save_data: Dictionary)
 signal peer_ship_left(peer_id: int)
 signal connection_status_changed(status_text: String)
 signal bounty_spawned(quest_id: String, ship_id: int)
@@ -17,7 +20,9 @@ signal salvage_spawned(quest_id: String, drop_id: int, world_pos: Vector2)
 const SYNC_INTERVAL: float = 0.058 # Fires cleanly every 2 ticks on 30Hz physics (steady 15 Hz, zero 66/100ms skip)
 const KEYFRAME_INTERVAL: float = 10.0 # Safety full-state keyframe interval (WebSocket/TCP is reliable)
 const INPUT_INTERVAL: float = 0.05
+const AUTOSAVE_INTERVAL: float = 15.0
 const AOI_FULL_RATE_DIST_SQ: float = 1250.0 * 1250.0
+const SaveStoreScript := preload("res://sim/save_store.gd")
 
 enum Mode { SOLO = 0, CLIENT = 1, SERVER = 2 }
 
@@ -26,6 +31,10 @@ var listen_port: int = Contracts.SERVER_DEFAULT_PORT
 var world_seed: int = Contracts.DEFAULT_WORLD_SEED
 var local_captain_name: String = "Käpt'n"
 var local_peer_id: int = 1
+var local_auth_mode: String = "guest"
+var local_auth_secret: String = ""
+var local_session_token: String = ""
+var local_saved_profile: Dictionary = {}
 
 var world_map_ref: Node = null
 var combat_system_ref: CombatSystem = null
@@ -35,14 +44,20 @@ var all_ships_ref: Dictionary = {}
 
 var _peer: WebSocketMultiplayerPeer = null
 var _host_runner: LocalHostRunner = LocalHostRunner.new()
+var _account_store: SaveStoreScript = SaveStoreScript.new()
 var _sync_accum: float = 0.0
 var _keyframe_accum: float = 0.0
+var _autosave_accum: float = 0.0
 var _server_time: float = 0.0
 var _force_full_snapshot: bool = true
 var _input_accum: float = 0.0
 var _last_sent_steer: float = 0.0
 var _last_sent_sail: int = Contracts.SailState.ANCHORED
 var _peer_names: Dictionary = {}
+var _peer_accounts: Dictionary = {}    # peer_id (int) -> username_key (String)
+var _account_peers: Dictionary = {}    # username_key (String) -> peer_id (int)
+var _peer_save_states: Dictionary = {} # peer_id (int) -> Dictionary
+var _dirty_save_peers: Dictionary = {} # peer_id (int) -> bool
 var _signals_bound: bool = false
 
 # Server delta-tracking caches
@@ -201,14 +216,22 @@ func start_server(p_port: int = -1, p_seed: int = Contracts.DEFAULT_WORLD_SEED) 
 
 
 func connect_or_autostart(url: String, captain_name: String = "Käpt'n") -> void:
+	connect_with_auth(url, captain_name, "", "guest")
+
+
+func connect_with_auth(url: String, username: String, secret: String, auth_mode: String = "login") -> void:
 	shutdown()
-	_host_runner.begin_connect_or_autostart(url, captain_name, self)
+	_host_runner.begin_connect_or_autostart(url, username, self, auth_mode, secret)
+
+
+func get_last_target_url() -> String:
+	return _host_runner.last_target_url
 
 
 func reconnect_last() -> bool:
 	if _host_runner.last_target_url.is_empty():
 		return false
-	connect_or_autostart(_host_runner.last_target_url, _host_runner.last_captain_name)
+	connect_with_auth(_host_runner.last_target_url, _host_runner.last_captain_name, _host_runner.last_auth_secret, _host_runner.last_auth_mode)
 	return true
 
 
@@ -217,21 +240,30 @@ func spawn_local_headless_server(port: int = Contracts.SERVER_DEFAULT_PORT, p_se
 
 
 func close_peer_only() -> void:
+	if current_mode == Mode.SERVER:
+		save_all_connected_accounts()
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
 		multiplayer.multiplayer_peer = null
 	_peer = null
 	_peer_names.clear()
+	_peer_accounts.clear()
+	_account_peers.clear()
+	_peer_save_states.clear()
+	_dirty_save_peers.clear()
 	current_mode = Mode.SOLO
 
 
-func start_client(url: String, captain_name: String = "Käpt'n") -> int:
+func start_client(url: String, captain_name: String = "Käpt'n", auth_mode: String = "guest", auth_secret: String = "") -> int:
 	close_peer_only()
 	Engine.physics_ticks_per_second = 60
 	Engine.max_fps = 0
 	local_captain_name = captain_name.strip_edges()
 	if local_captain_name.is_empty():
 		local_captain_name = "Freibeuter"
+	local_auth_mode = auth_mode if not auth_mode.is_empty() else "guest"
+	local_auth_secret = auth_secret
+	local_saved_profile = {}
 
 	var target_url: String = normalize_ws_url(url)
 	_peer = WebSocketMultiplayerPeer.new()
@@ -261,10 +293,14 @@ func step_network(delta: float, local_steer: float = 0.0, local_sail_state: int 
 		_server_time += delta
 		_sync_accum += delta
 		_keyframe_accum += delta
+		_autosave_accum += delta
 		_flush_combat_batches()
 		if _sync_accum >= SYNC_INTERVAL:
 			_sync_accum = 0.0
 			_broadcast_world_snapshot()
+		if _autosave_accum >= AUTOSAVE_INTERVAL:
+			_autosave_accum = 0.0
+			save_all_connected_accounts()
 	elif current_mode == Mode.CLIENT:
 		if multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			_input_accum += delta
@@ -324,6 +360,11 @@ func send_ship_class_upgrade(new_hull_tier: int) -> void:
 func send_ship_repair(new_hp: float) -> void:
 	if _can_send_client_rpc():
 		rpc_id(1, "rpc_repair_ship", new_hp)
+
+
+func send_player_save_state(save_dict: Dictionary) -> void:
+	if _can_send_client_rpc():
+		rpc_id(1, "rpc_sync_player_save_state", save_dict)
 
 
 func _can_send_client_rpc() -> bool:
@@ -439,6 +480,13 @@ func _on_peer_connected(peer_id: int) -> void:
 func _on_peer_disconnected(peer_id: int) -> void:
 	if current_mode == Mode.SERVER:
 		print("[NetworkManager] Peer disconnected: %d" % peer_id)
+		save_peer_account(peer_id)
+		var acct_key: String = str(_peer_accounts.get(peer_id, ""))
+		if not acct_key.is_empty() and int(_account_peers.get(acct_key, -1)) == peer_id:
+			_account_peers.erase(acct_key)
+		_peer_accounts.erase(peer_id)
+		_peer_save_states.erase(peer_id)
+		_dirty_save_peers.erase(peer_id)
 		_peer_names.erase(peer_id)
 		_last_sent_ships.erase(peer_id)
 		_peers_needing_full.erase(peer_id)
@@ -448,8 +496,12 @@ func _on_peer_disconnected(peer_id: int) -> void:
 func _on_connected_to_server() -> void:
 	_host_runner.on_connected()
 	local_peer_id = multiplayer.get_unique_id()
-	connection_status_changed.emit("Verbunden! Betrete One-World...")
-	rpc_id(1, "rpc_join_world", local_captain_name)
+	if local_auth_mode in ["login", "register", "token"]:
+		connection_status_changed.emit("Verbunden! Prüfe Konto '%s'..." % local_captain_name)
+		rpc_id(1, "rpc_authenticate", local_auth_mode, local_captain_name, local_auth_secret)
+	else:
+		connection_status_changed.emit("Verbunden! Betrete One-World...")
+		rpc_id(1, "rpc_join_world", local_captain_name)
 
 
 func _on_connection_failed() -> void:
@@ -675,6 +727,133 @@ func _pack_ship_snapshot(s: Node, sid: int, send_full: bool, is_far_ai: bool = f
 	if float(cur["burn_timer"]) > 0.0 or float(pd["burn_timer"]) > 0.0:
 		delta_d["burn_timer"] = cur["burn_timer"]
 	return delta_d
+
+
+func save_peer_account(peer_id: int) -> bool:
+	if current_mode != Mode.SERVER:
+		return false
+	var acct_key: String = str(_peer_accounts.get(peer_id, ""))
+	if acct_key.is_empty():
+		return false
+	var state: Dictionary = (_peer_save_states.get(peer_id, SaveStoreScript.create_default_save_data()) as Dictionary).duplicate(true)
+	var ship: Node = all_ships_ref.get(peer_id, null)
+	if ship != null and is_instance_valid(ship):
+		var wp: Variant = ship.get("world_pos")
+		if wp is Vector2:
+			state["world_x"] = snappedf((wp as Vector2).x, 0.1)
+			state["world_y"] = snappedf((wp as Vector2).y, 0.1)
+			state["has_saved_pos"] = true
+		state["heading"] = snappedf(float(ship.get("heading")), 0.001)
+		state["hull_tier"] = clampi(int(ship.get("hull_tier")), Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+		var max_hp: float = maxf(10.0, float(ship.get("max_hp")))
+		if bool(ship.get("is_sunk")) or float(ship.get("hp")) <= 0.0:
+			state["hp"] = max_hp
+			state["has_saved_pos"] = false
+		else:
+			state["hp"] = clampf(snappedf(float(ship.get("hp")), 0.1), 1.0, max_hp)
+	_peer_save_states[peer_id] = state
+	_dirty_save_peers.erase(peer_id)
+	return _account_store.update_account_save(acct_key, state)
+
+
+func save_all_connected_accounts() -> void:
+	if current_mode != Mode.SERVER:
+		return
+	for pid_var in _peer_accounts.keys():
+		save_peer_account(int(pid_var))
+
+
+@rpc("any_peer", "reliable")
+func rpc_authenticate(auth_mode: String, username: String, secret: String) -> void:
+	if current_mode != Mode.SERVER:
+		return
+	var sender_id: int = multiplayer.get_remote_sender_id()
+	var res: Dictionary
+	match auth_mode:
+		"register":
+			res = _account_store.register_account(username, secret)
+		"login":
+			res = _account_store.login_account(username, secret)
+		"token":
+			res = _account_store.login_with_token(username, secret)
+		_:
+			res = { "ok": false, "error": "Unbekannter Anmeldemodus.", "clear_token": false }
+
+	if not bool(res.get("ok", false)):
+		rpc_id(sender_id, "rpc_auth_failed", str(res.get("error", "Anmeldung fehlgeschlagen.")), bool(res.get("clear_token", false)))
+		return
+
+	var clean_name: String = str(res["username"])
+	var acct_key: String = str(res["username_key"])
+	var session_token: String = str(res["session_token"])
+	var save_data: Dictionary = SaveStoreScript.sanitize_save_data(res.get("save_data", {}))
+
+	# Replace stale connection if same account reconnects (e.g. browser refresh)
+	if _account_peers.has(acct_key):
+		var old_pid: int = int(_account_peers[acct_key])
+		if old_pid != sender_id:
+			save_peer_account(old_pid)
+			_peer_accounts.erase(old_pid)
+			_peer_save_states.erase(old_pid)
+			_dirty_save_peers.erase(old_pid)
+			_peer_names.erase(old_pid)
+			_last_sent_ships.erase(old_pid)
+			_peers_needing_full.erase(old_pid)
+			peer_ship_left.emit(old_pid)
+			if multiplayer.multiplayer_peer != null and old_pid > 1:
+				multiplayer.multiplayer_peer.disconnect_peer(old_pid, true)
+
+	_peer_accounts[sender_id] = acct_key
+	_account_peers[acct_key] = sender_id
+	_peer_save_states[sender_id] = save_data.duplicate(true)
+	_peer_names[sender_id] = clean_name
+	_peers_needing_full[sender_id] = true
+	_sync_accum = SYNC_INTERVAL
+
+	peer_ship_joined_with_save.emit(sender_id, clean_name, save_data)
+	rpc_id(sender_id, "rpc_welcome_client_account", sender_id, world_seed, clean_name, session_token, save_data)
+
+
+@rpc("authority", "reliable")
+func rpc_auth_failed(reason: String, clear_saved_auth: bool = false) -> void:
+	if current_mode != Mode.CLIENT:
+		return
+	shutdown()
+	auth_failed.emit(reason, clear_saved_auth)
+
+
+@rpc("authority", "reliable")
+func rpc_welcome_client_account(assigned_ship_id: int, server_seed: int, display_name: String, session_token: String, save_data: Dictionary) -> void:
+	if current_mode != Mode.CLIENT:
+		return
+	local_peer_id = assigned_ship_id
+	world_seed = server_seed
+	local_captain_name = display_name
+	local_session_token = session_token
+	local_auth_mode = "token"
+	local_auth_secret = session_token
+	_host_runner.last_captain_name = display_name
+	_host_runner.last_auth_mode = "token"
+	_host_runner.last_auth_secret = session_token
+	local_saved_profile = SaveStoreScript.sanitize_save_data(save_data)
+	client_joined_with_save.emit(assigned_ship_id, server_seed, display_name, session_token, local_saved_profile)
+	client_joined.emit(assigned_ship_id, server_seed)
+
+
+@rpc("any_peer", "reliable")
+func rpc_sync_player_save_state(profile_state: Dictionary) -> void:
+	if current_mode != Mode.SERVER:
+		return
+	var sender_id: int = multiplayer.get_remote_sender_id()
+	if not _peer_accounts.has(sender_id):
+		return
+	var cur: Dictionary = _peer_save_states.get(sender_id, SaveStoreScript.create_default_save_data())
+	var merged: Dictionary = cur.duplicate(true)
+	for key in ["gold", "hull_tier", "owned_ship_tiers", "grid", "active_quests"]:
+		if profile_state.has(key):
+			merged[key] = profile_state[key]
+	_peer_save_states[sender_id] = SaveStoreScript.sanitize_save_data(merged)
+	_dirty_save_peers[sender_id] = true
 
 
 @rpc("any_peer", "reliable")

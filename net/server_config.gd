@@ -77,3 +77,110 @@ static func save_profile(captain_name: String, server_url: String = "") -> void:
 	if not server_url.strip_edges().is_empty():
 		cfg.set_value("profile", "last_server_url", server_url.strip_edges())
 	cfg.save(PROFILE_PATH)
+
+
+static func normalize_server_key(url: String) -> String:
+	var effective: String = get_effective_connect_url(url).strip_edges().to_lower()
+	if effective.begins_with("https://"):
+		effective = "wss://" + effective.substr(8)
+	elif effective.begins_with("http://"):
+		effective = "ws://" + effective.substr(7)
+	elif not effective.begins_with("ws://") and not effective.begins_with("wss://"):
+		effective = "ws://" + effective
+	while effective.ends_with("/"):
+		effective = effective.left(effective.length() - 1)
+	return effective
+
+
+static func load_mp_username() -> String:
+	var cfg := ConfigFile.new()
+	if cfg.load(PROFILE_PATH) == OK:
+		return str(cfg.get_value("auth", "mp_username", "")).strip_edges()
+	return ""
+
+
+static func load_mp_session_token() -> String:
+	var cfg := ConfigFile.new()
+	if cfg.load(PROFILE_PATH) == OK:
+		return str(cfg.get_value("auth", "mp_session_token", "")).strip_edges()
+	return ""
+
+
+static func load_mp_auth_server() -> String:
+	var cfg := ConfigFile.new()
+	if cfg.load(PROFILE_PATH) == OK:
+		return str(cfg.get_value("auth", "mp_auth_server", "")).strip_edges()
+	return ""
+
+
+static func has_mp_auth_for_url(url: String) -> bool:
+	var u: String = load_mp_username()
+	var tok: String = load_mp_session_token()
+	if u.is_empty() or tok.is_empty():
+		return false
+	var saved_srv: String = load_mp_auth_server()
+	return not saved_srv.is_empty() and saved_srv == normalize_server_key(url)
+
+
+static func save_mp_auth(username: String, session_token: String, server_url: String) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(PROFILE_PATH)
+	var clean_user: String = username.strip_edges()
+	cfg.set_value("auth", "mp_username", clean_user)
+	cfg.set_value("auth", "mp_session_token", session_token.strip_edges())
+	cfg.set_value("auth", "mp_auth_server", normalize_server_key(server_url))
+	if not clean_user.is_empty():
+		cfg.set_value("profile", "captain_name", clean_user)
+	if not server_url.strip_edges().is_empty():
+		cfg.set_value("profile", "last_server_url", server_url.strip_edges())
+	cfg.save(PROFILE_PATH)
+
+
+static func clear_mp_auth(keep_username: bool = true) -> void:
+	var cfg := ConfigFile.new()
+	if cfg.load(PROFILE_PATH) != OK:
+		return
+	if not keep_username:
+		cfg.set_value("auth", "mp_username", "")
+	cfg.set_value("auth", "mp_session_token", "")
+	cfg.set_value("auth", "mp_auth_server", "")
+	cfg.save(PROFILE_PATH)
+
+
+static func load_local_username() -> String:
+	var cfg := ConfigFile.new()
+	if cfg.load(PROFILE_PATH) == OK:
+		return str(cfg.get_value("local_auth", "username", "")).strip_edges()
+	return ""
+
+
+static func load_local_session_token() -> String:
+	var cfg := ConfigFile.new()
+	if cfg.load(PROFILE_PATH) == OK:
+		return str(cfg.get_value("local_auth", "session_token", "")).strip_edges()
+	return ""
+
+
+static func has_local_auth() -> bool:
+	return not load_local_username().is_empty() and not load_local_session_token().is_empty()
+
+
+static func save_local_auth(username: String, session_token: String) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(PROFILE_PATH)
+	var clean_user: String = username.strip_edges()
+	cfg.set_value("local_auth", "username", clean_user)
+	cfg.set_value("local_auth", "session_token", session_token.strip_edges())
+	if not clean_user.is_empty():
+		cfg.set_value("profile", "captain_name", clean_user)
+	cfg.save(PROFILE_PATH)
+
+
+static func clear_local_auth(keep_username: bool = true) -> void:
+	var cfg := ConfigFile.new()
+	if cfg.load(PROFILE_PATH) != OK:
+		return
+	if not keep_username:
+		cfg.set_value("local_auth", "username", "")
+	cfg.set_value("local_auth", "session_token", "")
+	cfg.save(PROFILE_PATH)

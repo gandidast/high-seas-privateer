@@ -124,6 +124,11 @@ func setup(
 	loot_system_ref = p_loot_system
 	all_ships_ref = p_all_ships
 	gold_amount = p_starting_gold
+	active_quests.clear()
+	if player_ship != null and player_ship.has_method("get_class_title"):
+		_player_class_title = str(player_ship.call("get_class_title"))
+	else:
+		_player_class_title = "Schaluppe"
 	_tracked_forts.clear()
 	_tracked_sea_monster.clear()
 	wanted_level = 0

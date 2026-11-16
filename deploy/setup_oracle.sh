@@ -165,6 +165,7 @@ elif [[ ! -f "${APP_DIR}/project.godot" ]] && [[ -x "${APP_DIR}/build/linux/pira
 	EXEC_CMD="${APP_DIR}/build/linux/pirate_server.x86_64 --headless -- --server --port=${PORT} --seed=${WORLD_SEED}"
 fi
 
+mkdir -p /var/lib/pirate_game
 cat > /etc/systemd/system/pixel-privateer.service <<EOF
 [Unit]
 Description=High Seas Pixel Privateer Headless Server
@@ -176,6 +177,7 @@ Type=simple
 WorkingDirectory=${APP_DIR}
 Environment="PORT=${PORT}"
 Environment="HOME=/tmp"
+Environment="PIRATE_DATA_DIR=/var/lib/pirate_game"
 ExecStart=${EXEC_CMD}
 Restart=always
 RestartSec=3

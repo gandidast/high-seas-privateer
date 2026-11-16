@@ -20,12 +20,16 @@ enum AutoStartState {
 var auto_state: int = AutoStartState.IDLE
 var last_target_url: String = ""
 var last_captain_name: String = "Käpt'n"
+var last_auth_mode: String = "guest"
+var last_auth_secret: String = ""
 
 var _tcp_probe: StreamPeerTCP = null
 var _state_timer: float = 0.0
 var _connect_timeout_timer: float = 0.0
 var _pending_url: String = ""
 var _pending_captain_name: String = "Käpt'n"
+var _pending_auth_mode: String = "guest"
+var _pending_auth_secret: String = ""
 var _pending_port: int = Contracts.SERVER_DEFAULT_PORT
 var _autostart_attempted: bool = false
 var _connect_retries: int = 0
@@ -51,7 +55,7 @@ func on_connected() -> void:
 	_connect_timeout_timer = 0.0
 
 
-func begin_connect_or_autostart(url: String, captain_name: String, nm: NetworkManager) -> void:
+func begin_connect_or_autostart(url: String, captain_name: String, nm: NetworkManager, auth_mode: String = "guest", auth_secret: String = "") -> void:
 	var raw_url: String = url.strip_edges()
 	var used_placeholder: bool = false
 	if ServerConfigScript.is_placeholder_url(raw_url):
@@ -62,11 +66,15 @@ func begin_connect_or_autostart(url: String, captain_name: String, nm: NetworkMa
 	_pending_captain_name = captain_name.strip_edges()
 	if _pending_captain_name.is_empty():
 		_pending_captain_name = "Freibeuter"
+	_pending_auth_mode = auth_mode if not auth_mode.is_empty() else "guest"
+	_pending_auth_secret = auth_secret
 	_pending_port = NetworkManager.extract_port_from_url(_pending_url, Contracts.SERVER_DEFAULT_PORT)
 	_autostart_attempted = false
 	_connect_retries = 0
 	last_target_url = _pending_url
 	last_captain_name = _pending_captain_name
+	last_auth_mode = _pending_auth_mode
+	last_auth_secret = _pending_auth_secret
 
 	if NetworkManager.is_local_url(_pending_url) and not OS.has_feature("web"):
 		_tcp_probe = StreamPeerTCP.new()
@@ -90,7 +98,7 @@ func begin_connect_or_autostart(url: String, captain_name: String, nm: NetworkMa
 		else:
 			nm.connection_status_changed.emit("Verbinde mit One-World (%s)..." % _pending_url)
 		_connect_timeout_timer = CLIENT_CONNECT_TIMEOUT_SEC
-		var err: int = nm.start_client(_pending_url, _pending_captain_name)
+		var err: int = nm.start_client(_pending_url, _pending_captain_name, _pending_auth_mode, _pending_auth_secret)
 		if err != OK:
 			_connect_timeout_timer = 0.0
 			nm.client_disconnected_from_server.emit("Verbindungsfehler zu %s (Code %d)." % [_pending_url, err])
@@ -118,7 +126,7 @@ func tick(delta: float, is_client_mode: bool, mp: MultiplayerAPI, nm: NetworkMan
 				auto_state = AutoStartState.IDLE
 				nm.connection_status_changed.emit("Lokaler Server gefunden – verbinde mit One-World...")
 				_connect_timeout_timer = CLIENT_CONNECT_TIMEOUT_SEC
-				nm.start_client(_pending_url, _pending_captain_name)
+				nm.start_client(_pending_url, _pending_captain_name, _pending_auth_mode, _pending_auth_secret)
 				return
 			elif st == StreamPeerTCP.STATUS_ERROR or st == StreamPeerTCP.STATUS_NONE:
 				close_probe()
@@ -133,7 +141,7 @@ func tick(delta: float, is_client_mode: bool, mp: MultiplayerAPI, nm: NetworkMan
 			_state_timer = 0.0
 			nm.connection_status_changed.emit("Verbinde mit lokalem One-World Server (Port %d)..." % _pending_port)
 			_connect_timeout_timer = CLIENT_CONNECT_TIMEOUT_SEC
-			if nm.start_client(_pending_url, _pending_captain_name) != OK:
+			if nm.start_client(_pending_url, _pending_captain_name, _pending_auth_mode, _pending_auth_secret) != OK:
 				on_connection_failed(nm)
 	elif auto_state == AutoStartState.CONNECTING_AFTER_BOOT and _connect_timeout_timer > 0.0:
 		if mp.multiplayer_peer != null and mp.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTING:
