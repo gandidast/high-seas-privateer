@@ -759,12 +759,7 @@ func _physics_process(delta: float) -> void:
 
 	# Solo or Client Mode
 	var ui_blocking: bool = _is_ui_open()
-	var steer_input: float = 0.0
-	if not ui_blocking:
-		if Input.is_action_pressed("steer_left"):
-			steer_input -= 1.0
-		if Input.is_action_pressed("steer_right"):
-			steer_input += 1.0
+	var steer_input: float = _get_current_steer_input()
 
 	if network_manager.current_mode == NetworkManager.Mode.SOLO:
 		if world_map != null:
@@ -815,6 +810,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if _is_ui_open():
 		return
+	if event is InputEventMouseButton and (event as InputEventMouseButton).pressed and get_viewport() != null:
+		get_viewport().gui_release_focus()
 	if player_ship == null or bool(player_ship.get("is_sunk")):
 		return
 
@@ -849,9 +846,9 @@ func _get_current_steer_input() -> float:
 	if _is_ui_open():
 		return 0.0
 	var s: float = 0.0
-	if Input.is_action_pressed("steer_left"):
+	if Input.is_action_pressed("steer_left") or Input.is_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
 		s -= 1.0
-	if Input.is_action_pressed("steer_right"):
+	if Input.is_action_pressed("steer_right") or Input.is_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
 		s += 1.0
 	return s
 
