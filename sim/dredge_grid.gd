@@ -38,23 +38,19 @@ func _evict_incompatible_items_to_stash() -> void:
 	for item in placed_items:
 		if item == null:
 			continue
-		var eff: Vector2i = item.get_effective_size()
-		var valid: bool = (
-			item.grid_pos.x >= 0
-			and item.grid_pos.y >= 0
-			and item.grid_pos.x + eff.x <= w
-			and item.grid_pos.y + eff.y <= h
-		)
+		var cells: Array[Vector2i] = get_item_cells(item, item.grid_pos.x, item.grid_pos.y, item.rot_steps)
+		var valid: bool = not cells.is_empty()
 		if valid:
-			var cells: Array[Vector2i] = get_item_cells(item, item.grid_pos.x, item.grid_pos.y, item.rotated)
 			for c in cells:
-				if not _is_slot_compatible(item, get_slot_type(c.x, c.y)):
+				if c.x < 0 or c.y < 0 or c.x >= w or c.y >= h or not _is_slot_compatible(item, get_slot_type(c.x, c.y)):
 					valid = false
 					break
 		if valid:
 			kept.append(item)
 		else:
 			item.grid_pos = Vector2i(-1, -1)
+			item.rotated = false
+			item.rot_steps = 0
 			if not (item in stash_items):
 				stash_items.append(item)
 	placed_items = kept
@@ -82,15 +78,19 @@ func get_slot_type(gx: int, gy: int) -> int:
 	return Contracts.SlotType.CARGO_HOLD
 
 
-func get_item_cells(item: Contracts.GridItemData, gx: int, gy: int, is_rotated: bool) -> Array[Vector2i]:
+static func _resolve_rot_steps(rot_arg: Variant) -> int:
+	if rot_arg is int:
+		return posmod(int(rot_arg), 4)
+	return 1 if bool(rot_arg) else 0
+
+
+func get_item_cells(item: Contracts.GridItemData, gx: int, gy: int, rot_arg: Variant = 0) -> Array[Vector2i]:
 	var cells: Array[Vector2i] = []
 	if item == null:
 		return cells
-	var w: int = item.height if is_rotated else item.width
-	var h: int = item.width if is_rotated else item.height
-	for dy in range(h):
-		for dx in range(w):
-			cells.append(Vector2i(gx + dx, gy + dy))
+	var steps: int = _resolve_rot_steps(rot_arg)
+	for local_cell in item.get_rotated_local_cells(steps):
+		cells.append(Vector2i(gx + local_cell.x, gy + local_cell.y))
 	return cells
 
 
@@ -98,7 +98,7 @@ func get_item_at(gx: int, gy: int) -> Contracts.GridItemData:
 	if gx < 0 or gx >= get_grid_width() or gy < 0 or gy >= get_grid_height():
 		return null
 	for item in placed_items:
-		var cells: Array[Vector2i] = get_item_cells(item, item.grid_pos.x, item.grid_pos.y, item.rotated)
+		var cells: Array[Vector2i] = get_item_cells(item, item.grid_pos.x, item.grid_pos.y, item.rot_steps)
 		for c in cells:
 			if c.x == gx and c.y == gy:
 				return item
@@ -119,16 +119,17 @@ func _is_slot_compatible(item: Contracts.GridItemData, slot_type: int) -> bool:
 	return slot_type in item.allowed_slots
 
 
-func can_place_item(item: Contracts.GridItemData, gx: int, gy: int, is_rotated: bool) -> bool:
+func can_place_item(item: Contracts.GridItemData, gx: int, gy: int, rot_arg: Variant = 0) -> bool:
 	if item == null:
 		return false
-	var w: int = item.height if is_rotated else item.width
-	var h: int = item.width if is_rotated else item.height
-	if gx < 0 or gy < 0 or gx + w > get_grid_width() or gy + h > get_grid_height():
+	var gw: int = get_grid_width()
+	var gh: int = get_grid_height()
+	var candidate_cells: Array[Vector2i] = get_item_cells(item, gx, gy, rot_arg)
+	if candidate_cells.is_empty():
 		return false
-
-	var candidate_cells: Array[Vector2i] = get_item_cells(item, gx, gy, is_rotated)
 	for c in candidate_cells:
+		if c.x < 0 or c.y < 0 or c.x >= gw or c.y >= gh:
+			return false
 		var slot: int = get_slot_type(c.x, c.y)
 		if not _is_slot_compatible(item, slot):
 			return false
@@ -139,16 +140,18 @@ func can_place_item(item: Contracts.GridItemData, gx: int, gy: int, is_rotated: 
 	return true
 
 
-func place_item(item: Contracts.GridItemData, gx: int, gy: int, is_rotated: bool) -> bool:
-	if not can_place_item(item, gx, gy, is_rotated):
+func place_item(item: Contracts.GridItemData, gx: int, gy: int, rot_arg: Variant = 0) -> bool:
+	if not can_place_item(item, gx, gy, rot_arg):
 		return false
 
+	var steps: int = _resolve_rot_steps(rot_arg)
 	remove_from_stash(item)
 	if not (item in placed_items):
 		placed_items.append(item)
 
 	item.grid_pos = Vector2i(gx, gy)
-	item.rotated = is_rotated
+	item.rot_steps = steps
+	item.rotated = (steps % 2 == 1)
 	compile_stats()
 	return true
 
@@ -192,11 +195,17 @@ func remove_from_stash(item: Contracts.GridItemData) -> bool:
 func rotate_item_in_grid(item: Contracts.GridItemData) -> bool:
 	if item == null or not (item in placed_items):
 		return false
-	var next_rot: bool = not item.rotated
-	if can_place_item(item, item.grid_pos.x, item.grid_pos.y, next_rot):
-		item.rotated = next_rot
-		compile_stats()
-		return true
+	var has_poly: bool = not item.shape_offsets.is_empty()
+	var max_steps: int = 4 if has_poly else (2 if item.width != item.height else 1)
+	if max_steps <= 1:
+		return false
+	for delta in range(1, max_steps):
+		var next_step: int = (item.rot_steps + delta) % max_steps
+		if can_place_item(item, item.grid_pos.x, item.grid_pos.y, next_step):
+			item.rot_steps = next_step
+			item.rotated = (next_step % 2 == 1)
+			compile_stats()
+			return true
 	return false
 
 
@@ -205,12 +214,13 @@ func auto_place_item(item: Contracts.GridItemData) -> bool:
 		return false
 	var gw: int = get_grid_width()
 	var gh: int = get_grid_height()
+	var has_poly: bool = not item.shape_offsets.is_empty()
+	var max_steps: int = 4 if has_poly else (2 if item.width != item.height else 1)
 	for gy in range(gh):
 		for gx in range(gw):
-			if can_place_item(item, gx, gy, false):
-				return place_item(item, gx, gy, false)
-			if item.width != item.height and can_place_item(item, gx, gy, true):
-				return place_item(item, gx, gy, true)
+			for step in range(max_steps):
+				if can_place_item(item, gx, gy, step):
+					return place_item(item, gx, gy, step)
 	return false
 
 
@@ -232,22 +242,27 @@ func populate_starter_loadout() -> void:
 	# Place directly before a single compile_stats() call
 	port_gun.grid_pos = Vector2i(1, 0)
 	port_gun.rotated = true
+	port_gun.rot_steps = 1
 	placed_items.append(port_gun)
 
 	starboard_gun.grid_pos = Vector2i(1, gh - 1)
 	starboard_gun.rotated = true
+	starboard_gun.rot_steps = 1
 	placed_items.append(starboard_gun)
 
 	powder.grid_pos = Vector2i(3, 0)
 	powder.rotated = false
+	powder.rot_steps = 0
 	placed_items.append(powder)
 
 	sail.grid_pos = Vector2i(mast_x, mast_y)
 	sail.rotated = false
+	sail.rot_steps = 0
 	placed_items.append(sail)
 
 	rum.grid_pos = Vector2i(0, 1)
 	rum.rotated = false
+	rum.rot_steps = 0
 	placed_items.append(rum)
 
 	compile_stats()
@@ -262,7 +277,7 @@ func _cells_adjacent(cells_a: Array[Vector2i], cells_b: Array[Vector2i]) -> bool
 
 
 func _is_cannon_mounted_side(cannon: Contracts.GridItemData) -> Dictionary:
-	var cells: Array[Vector2i] = get_item_cells(cannon, cannon.grid_pos.x, cannon.grid_pos.y, cannon.rotated)
+	var cells: Array[Vector2i] = get_item_cells(cannon, cannon.grid_pos.x, cannon.grid_pos.y, cannon.rot_steps)
 	var port: bool = false
 	var starboard: bool = false
 	for c in cells:
@@ -277,7 +292,7 @@ func _is_cannon_mounted_side(cannon: Contracts.GridItemData) -> Dictionary:
 func _is_bow_mounted(weapon: Contracts.GridItemData) -> bool:
 	if weapon == null or weapon.category != Contracts.ItemCategory.BOW_WEAPON:
 		return false
-	var cells: Array[Vector2i] = get_item_cells(weapon, weapon.grid_pos.x, weapon.grid_pos.y, weapon.rotated)
+	var cells: Array[Vector2i] = get_item_cells(weapon, weapon.grid_pos.x, weapon.grid_pos.y, weapon.rot_steps)
 	for c in cells:
 		if get_slot_type(c.x, c.y) == Contracts.SlotType.BOW:
 			return true
@@ -288,7 +303,7 @@ func _is_synergy_source(item: Contracts.GridItemData) -> bool:
 	if item == null:
 		return false
 	var is_weapon: bool = item.category == Contracts.ItemCategory.CANNON or item.category == Contracts.ItemCategory.BOW_WEAPON
-	return item.reload_synergy_bonus > 0.0 or (item.burn_dps > 0.0 and not is_weapon)
+	return item.reload_synergy_bonus > 0.0 or item.get_cursed_bonus_synergy() > 0.0 or (item.burn_dps > 0.0 and not is_weapon)
 
 
 func _is_mounted_weapon(item: Contracts.GridItemData) -> bool:
@@ -314,9 +329,9 @@ func get_adjacent_synergy_cells() -> Array[Vector2i]:
 			mounted_cannons.append(item)
 
 	for src in sources:
-		var s_cells: Array[Vector2i] = get_item_cells(src, src.grid_pos.x, src.grid_pos.y, src.rotated)
+		var s_cells: Array[Vector2i] = get_item_cells(src, src.grid_pos.x, src.grid_pos.y, src.rot_steps)
 		for cannon in mounted_cannons:
-			var c_cells: Array[Vector2i] = get_item_cells(cannon, cannon.grid_pos.x, cannon.grid_pos.y, cannon.rotated)
+			var c_cells: Array[Vector2i] = get_item_cells(cannon, cannon.grid_pos.x, cannon.grid_pos.y, cannon.rot_steps)
 			if _cells_adjacent(s_cells, c_cells):
 				for sc in s_cells:
 					if not (sc in result):
@@ -332,18 +347,18 @@ func get_synergy_pairs_for_preview(
 	item: Contracts.GridItemData,
 	gx: int,
 	gy: int,
-	is_rotated: bool
+	rot_arg: Variant = 0
 ) -> Array[Vector2i]:
 	var result: Array[Vector2i] = []
 	if item == null:
 		return result
-	var preview_cells: Array[Vector2i] = get_item_cells(item, gx, gy, is_rotated)
+	var preview_cells: Array[Vector2i] = get_item_cells(item, gx, gy, rot_arg)
 
 	if _is_synergy_source(item):
 		for other in placed_items:
 			if other == item or not _is_mounted_weapon(other):
 				continue
-			var o_cells: Array[Vector2i] = get_item_cells(other, other.grid_pos.x, other.grid_pos.y, other.rotated)
+			var o_cells: Array[Vector2i] = get_item_cells(other, other.grid_pos.x, other.grid_pos.y, other.rot_steps)
 			if _cells_adjacent(preview_cells, o_cells):
 				for oc in o_cells:
 					if not (oc in result):
@@ -362,7 +377,7 @@ func get_synergy_pairs_for_preview(
 			for other in placed_items:
 				if other == item or not _is_synergy_source(other):
 					continue
-				var o_cells: Array[Vector2i] = get_item_cells(other, other.grid_pos.x, other.grid_pos.y, other.rotated)
+				var o_cells: Array[Vector2i] = get_item_cells(other, other.grid_pos.x, other.grid_pos.y, other.rot_steps)
 				if _cells_adjacent(preview_cells, o_cells):
 					for oc in o_cells:
 						if not (oc in result):
@@ -380,15 +395,14 @@ func _compile_weapon_entry(
 	class_reload_bonus: float
 ) -> Dictionary:
 	var synergy_mult: float = class_reload_bonus
-	var mult_item: float = item.get_affix_stat_multiplier()
-	var total_burn_dps: float = item.burn_dps * mult_item
+	var total_burn_dps: float = item.get_effective_burn_dps()
 	var max_added_burn: float = 0.0
 	for s_info in synergy_sources:
 		var src: Contracts.GridItemData = s_info["item"]
 		var s_cells: Array[Vector2i] = s_info["cells"]
 		if _cells_adjacent(s_cells, item_cells):
 			var src_mult: float = src.get_affix_stat_multiplier()
-			synergy_mult += src.reload_synergy_bonus * src_mult
+			synergy_mult += src.reload_synergy_bonus * src_mult + src.get_cursed_bonus_synergy()
 			if src.burn_dps > 0.0:
 				var added_burn: float = src.burn_dps * src_mult
 				total_burn_dps += added_burn
@@ -405,12 +419,12 @@ func _compile_weapon_entry(
 		"damage": eff_damage,
 		"pellet_count": pellets,
 		"reload_time": eff_reload,
-		"range": item.cannon_range,
+		"range": item.get_effective_range(),
 		"projectile_speed": item.projectile_speed,
 		"chain_shot_slow": item.chain_shot_slow,
 		"spread_angle_deg": item.spread_angle_deg,
 		"burn_dps": total_burn_dps,
-		"harpoon_pull": item.harpoon_pull * mult_item,
+		"harpoon_pull": item.harpoon_pull * item.get_affix_stat_multiplier(),
 		"synergy_mult": synergy_mult,
 		"grid_x": item.grid_pos.x,
 		"grid_y": item.grid_pos.y,
@@ -461,12 +475,12 @@ func compile_stats() -> Contracts.ShipStats:
 		if _is_synergy_source(item):
 			synergy_sources.append({
 				"item": item,
-				"cells": get_item_cells(item, item.grid_pos.x, item.grid_pos.y, item.rotated)
+				"cells": get_item_cells(item, item.grid_pos.x, item.grid_pos.y, item.rot_steps)
 			})
 
-		hp_bonus += item.max_hp_bonus * mult
+		hp_bonus += item.max_hp_bonus * mult + item.get_cursed_bonus_hp()
 		armor_bonus += item.armor_bonus * mult
-		speed_bonus += item.speed_bonus * mult
+		speed_bonus += item.speed_bonus * mult + item.get_cursed_bonus_speed()
 		turn_bonus += item.turn_bonus * mult
 		stats.passive_repair_rate += item.passive_repair_rate * mult
 		stats.ram_damage_bonus += item.ram_damage_bonus * mult
@@ -496,7 +510,7 @@ func compile_stats() -> Contracts.ShipStats:
 
 	for item in placed_items:
 		var eff_size: Vector2i = item.get_effective_size()
-		var item_cells: Array[Vector2i] = get_item_cells(item, item.grid_pos.x, item.grid_pos.y, item.rotated)
+		var item_cells: Array[Vector2i] = get_item_cells(item, item.grid_pos.x, item.grid_pos.y, item.rot_steps)
 		var primary_slot: int = get_slot_type(item.grid_pos.x, item.grid_pos.y)
 
 		if item.category == Contracts.ItemCategory.CANNON:
@@ -548,6 +562,7 @@ func compile_stats() -> Contracts.ShipStats:
 			"grid_y": item.grid_pos.y,
 			"width": eff_size.x,
 			"height": eff_size.y,
+			"rot_steps": item.rot_steps,
 			"norm_x": center_cell.x / float(maxi(1, grid_w)),
 			"norm_y": center_cell.y / float(maxi(1, grid_h)),
 			"primary_color": item.primary_color,

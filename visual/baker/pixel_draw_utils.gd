@@ -92,19 +92,31 @@ static func apply_affix_accents(img: Image, affix: int) -> void:
 	var w: int = img.get_width()
 	var h: int = img.get_height()
 	var rust_col := Color(0.604, 0.275, 0.137, 1.0)
-	var cursed_accent := Color(0.608, 0.365, 0.898, 1.0)
-	var cursed_tint := Color(0.329, 0.145, 0.510, 1.0)
+	var rare_glint := Color(0.450, 0.910, 1.000, 1.0)
+	var rare_tint := Color(0.240, 0.680, 0.940, 1.0)
+	var master_tint := Color(0.960, 0.780, 0.260, 1.0)
+	var cursed_cyan := Color(0.320, 0.980, 0.780, 1.0)
+	var cursed_magenta := Color(0.860, 0.280, 0.960, 1.0)
+	var cursed_tint := Color(0.220, 0.080, 0.360, 1.0)
 	for y in range(h):
 		for x in range(w):
 			var c: Color = img.get_pixel(x, y)
 			if c.a <= 0.0:
 				continue
 			if affix == Contracts.ItemAffix.RUSTED:
-				img.set_pixel(x, y, rust_col if (x * 3 + y * 5) % 7 == 0 else c.darkened(0.12))
+				img.set_pixel(x, y, rust_col if (x * 3 + y * 5) % 7 == 0 else c.darkened(0.14))
+			elif affix == Contracts.ItemAffix.RARE:
+				img.set_pixel(x, y, rare_glint if (x + y * 2) % 13 == 0 else c.lerp(rare_tint, 0.11).lightened(0.03))
 			elif affix == Contracts.ItemAffix.MASTERWORK:
-				img.set_pixel(x, y, SUNLIGHT_HIGHLIGHT if (x + y) % 11 == 0 else c.lightened(0.06))
+				img.set_pixel(x, y, SUNLIGHT_HIGHLIGHT if (x + y) % 9 == 0 else c.lerp(master_tint, 0.10).lightened(0.06))
 			elif affix == Contracts.ItemAffix.CURSED:
-				img.set_pixel(x, y, cursed_accent if (x * 2 + y * 3) % 9 == 0 else c.lerp(cursed_tint, 0.16))
+				var rune: int = (x * 2 + y * 3) % 17
+				if rune == 0:
+					img.set_pixel(x, y, cursed_cyan)
+				elif rune == 8:
+					img.set_pixel(x, y, cursed_magenta)
+				else:
+					img.set_pixel(x, y, c.lerp(cursed_tint, 0.28))
 
 
 static func draw_upright_gun_barrel(

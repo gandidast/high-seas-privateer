@@ -96,15 +96,16 @@ func get_item_icon_texture(item: Contracts.GridItemData) -> ImageTexture:
 	return tex
 
 
-func draw_item_sprite(canvas: CanvasItem, rect: Rect2, item: Contracts.GridItemData, is_rotated: bool, modulate_col: Color = Color.WHITE) -> void:
+func draw_item_sprite(canvas: CanvasItem, rect: Rect2, item: Contracts.GridItemData, rot_arg: Variant = 0, modulate_col: Color = Color.WHITE) -> void:
 	var tex: ImageTexture = get_item_icon_texture(item)
 	if tex == null:
 		return
+	var steps: int = DredgeGrid._resolve_rot_steps(rot_arg)
 	var inner_size := Vector2(maxf(14.0, rect.size.x - 8.0), maxf(14.0, rect.size.y - 8.0))
 	var center: Vector2 = rect.get_center().round()
-	if is_rotated:
-		var unrot_size := Vector2(inner_size.y, inner_size.x)
-		canvas.draw_set_transform(center, PI * 0.5, Vector2.ONE)
+	if steps != 0:
+		var unrot_size: Vector2 = Vector2(inner_size.y, inner_size.x) if (steps % 2 == 1) else inner_size
+		canvas.draw_set_transform(center, float(steps) * PI * 0.5, Vector2.ONE)
 		canvas.draw_texture_rect(tex, Rect2(-unrot_size * 0.5, unrot_size), false, modulate_col)
 		canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	else:
@@ -216,21 +217,31 @@ func draw_ship_blueprint_and_grid(
 
 	var synergy_cells: Array[Vector2i] = dredge_grid.get_adjacent_synergy_cells()
 	for item in dredge_grid.placed_items:
-		var eff_size: Vector2i = item.get_effective_size()
+		var eff_size: Vector2i = item.get_effective_bbox(item.rot_steps)
 		var item_rect := Rect2(
 			grid_origin + Vector2(float(item.grid_pos.x) * cell_sz + 2.0, float(item.grid_pos.y) * cell_sz + 2.0),
 			Vector2(float(eff_size.x) * cell_sz - 4.0, float(eff_size.y) * cell_sz - 4.0)
 		)
+		var is_cursed: bool = (item.affix == Contracts.ItemAffix.CURSED)
 		var tile_bg: Color = Color(0.11, 0.11, 0.16, 0.94).lerp(item.primary_color, 0.10)
+		if is_cursed:
+			var curse_glow: float = 0.08 + 0.06 * sin(pulse_time * 3.8 + float(item.grid_pos.x + item.grid_pos.y))
+			tile_bg = tile_bg.lerp(Color(0.32, 0.06, 0.42, 0.96), 0.25 + curse_glow)
 		var border: Color = UIThemeHelper.affix_color(item.affix, item.rarity)
 		if hovered_item == item:
 			border = UIThemeHelper.COL_GOLD
-		UIThemeHelper.draw_clean_box(canvas, item_rect, tile_bg, border)
-		canvas.draw_line(item_rect.position + Vector2(1.0, 1.0), Vector2(item_rect.end.x - 1.0, item_rect.position.y + 1.0), Color(1.0, 1.0, 1.0, 0.10), 1.5)
-		draw_item_sprite(canvas, item_rect, item, item.rotated)
+		var local_cells: Array[Vector2i] = item.get_rotated_local_cells(item.rot_steps)
+		if item.shape_offsets.is_empty():
+			UIThemeHelper.draw_clean_box(canvas, item_rect, tile_bg, border)
+			canvas.draw_line(item_rect.position + Vector2(1.0, 1.0), Vector2(item_rect.end.x - 1.0, item_rect.position.y + 1.0), Color(1.0, 1.0, 1.0, 0.10), 1.5)
+		else:
+			_draw_polyomino_cells(canvas, grid_origin, cell_sz, local_cells, item.grid_pos, tile_bg, border)
+		draw_item_sprite(canvas, item_rect, item, item.rot_steps)
 		if item.affix != Contracts.ItemAffix.STANDARD:
-			var tag: String = "R" if item.affix == Contracts.ItemAffix.RUSTED else ("M" if item.affix == Contracts.ItemAffix.MASTERWORK else "V")
-			UIThemeHelper.draw_sharp_text(canvas, font, item_rect.position + Vector2(5.0, 17.0), tag, 14, border)
+			var tag: String = _affix_badge_char(item.affix)
+			var badge_cell: Vector2i = local_cells[0] if not local_cells.is_empty() else Vector2i.ZERO
+			var badge_pos: Vector2 = grid_origin + Vector2(float(item.grid_pos.x + badge_cell.x) * cell_sz + 6.0, float(item.grid_pos.y + badge_cell.y) * cell_sz + 18.0)
+			UIThemeHelper.draw_sharp_text(canvas, font, badge_pos, tag, 14, border)
 
 	var pulse_alpha: float = 0.58 + 0.35 * sin(pulse_time * 5.0)
 	var syn_border := Color(UIThemeHelper.COL_GOLD.r, UIThemeHelper.COL_GOLD.g, UIThemeHelper.COL_GOLD.b, pulse_alpha)
@@ -275,6 +286,51 @@ static func get_stash_group_index(category: int) -> int:
 			return 4
 
 
+static func _affix_badge_char(affix: int) -> String:
+	match affix:
+		Contracts.ItemAffix.RUSTED:
+			return "R"
+		Contracts.ItemAffix.RARE:
+			return "S"
+		Contracts.ItemAffix.MASTERWORK:
+			return "M"
+		Contracts.ItemAffix.CURSED:
+			return "V"
+		_:
+			return ""
+
+
+static func _draw_polyomino_cells(
+	canvas: CanvasItem,
+	origin: Vector2,
+	cell_sz: float,
+	local_cells: Array[Vector2i],
+	grid_offset: Vector2i,
+	fill_col: Color,
+	border_col: Color
+) -> void:
+	for lc in local_cells:
+		var cx: float = origin.x + float(grid_offset.x + lc.x) * cell_sz
+		var cy: float = origin.y + float(grid_offset.y + lc.y) * cell_sz
+		canvas.draw_rect(Rect2(cx + 2.0, cy + 2.0, cell_sz - 4.0, cell_sz - 4.0), fill_col, true)
+		var has_right: bool = (lc + Vector2i(1, 0)) in local_cells
+		var has_left: bool = (lc + Vector2i(-1, 0)) in local_cells
+		var has_down: bool = (lc + Vector2i(0, 1)) in local_cells
+		var has_up: bool = (lc + Vector2i(0, -1)) in local_cells
+		if has_right:
+			canvas.draw_rect(Rect2(cx + cell_sz - 2.0, cy + 2.0, 4.0, cell_sz - 4.0), fill_col, true)
+		else:
+			canvas.draw_line(Vector2(cx + cell_sz - 2.0, cy + 2.0), Vector2(cx + cell_sz - 2.0, cy + cell_sz - 2.0), border_col, 2.0)
+		if not has_left:
+			canvas.draw_line(Vector2(cx + 2.0, cy + 2.0), Vector2(cx + 2.0, cy + cell_sz - 2.0), border_col, 2.0)
+		if has_down:
+			canvas.draw_rect(Rect2(cx + 2.0, cy + cell_sz - 2.0, cell_sz - 4.0, 4.0), fill_col, true)
+		else:
+			canvas.draw_line(Vector2(cx + 2.0, cy + cell_sz - 2.0), Vector2(cx + cell_sz - 2.0, cy + cell_sz - 2.0), border_col, 2.0)
+		if not has_up:
+			canvas.draw_line(Vector2(cx + 2.0, cy + 2.0), Vector2(cx + cell_sz - 2.0, cy + 2.0), border_col, 2.0)
+
+
 static func get_item_quality_score(item: Contracts.GridItemData) -> int:
 	if item == null:
 		return 0
@@ -284,10 +340,12 @@ static func get_item_quality_score(item: Contracts.GridItemData) -> int:
 			affix_rank = 0
 		Contracts.ItemAffix.STANDARD:
 			affix_rank = 1
-		Contracts.ItemAffix.MASTERWORK:
+		Contracts.ItemAffix.RARE:
 			affix_rank = 2
-		Contracts.ItemAffix.CURSED:
+		Contracts.ItemAffix.MASTERWORK:
 			affix_rank = 3
+		Contracts.ItemAffix.CURSED:
+			affix_rank = 4
 	return item.rarity * 10 + affix_rank
 
 
@@ -307,10 +365,12 @@ static func get_rarity_short_label(item: Contracts.GridItemData) -> String:
 	match item.affix:
 		Contracts.ItemAffix.RUSTED:
 			return "Verrostet"
+		Contracts.ItemAffix.RARE:
+			return r_txt + " • Selten"
 		Contracts.ItemAffix.MASTERWORK:
 			return r_txt + " • Meist."
 		Contracts.ItemAffix.CURSED:
-			return r_txt + " • Fluch"
+			return r_txt + " • Fluch!"
 		_:
 			return r_txt
 
@@ -549,7 +609,7 @@ func draw_dragging_ghost(
 	font: Font,
 	dredge_grid: DredgeGrid,
 	dragging_item: Contracts.GridItemData,
-	drag_rot: bool,
+	drag_rot_arg: Variant,
 	target_origin: Vector2i
 ) -> void:
 	var layout: Dictionary = compute_grid_layout(dredge_grid)
@@ -558,29 +618,37 @@ func draw_dragging_ghost(
 	var cell_sz: float = float(layout["cell_size"])
 	var grid_origin: Vector2 = (panel_pos + (layout["origin"] as Vector2)).round()
 	var grid_rect := Rect2(grid_origin, layout["size"] as Vector2)
-	var eff_w: int = dragging_item.height if drag_rot else dragging_item.width
-	var eff_h: int = dragging_item.width if drag_rot else dragging_item.height
+	var steps: int = DredgeGrid._resolve_rot_steps(drag_rot_arg)
+	var eff_bbox: Vector2i = dragging_item.get_effective_bbox(steps)
+	var eff_w: int = eff_bbox.x
+	var eff_h: int = eff_bbox.y
 
 	if grid_rect.has_point(mouse_pos):
-		var is_valid: bool = dredge_grid.can_place_item(dragging_item, target_origin.x, target_origin.y, drag_rot)
+		var is_valid: bool = dredge_grid.can_place_item(dragging_item, target_origin.x, target_origin.y, steps)
 		var preview_col: Color = COL_VALID if is_valid else COL_INVALID
 		var preview_border: Color = Color(0.38, 0.94, 0.56) if is_valid else Color(0.96, 0.34, 0.34)
-		for c in dredge_grid.get_item_cells(dragging_item, target_origin.x, target_origin.y, drag_rot):
+		for c in dredge_grid.get_item_cells(dragging_item, target_origin.x, target_origin.y, steps):
 			if c.x >= 0 and c.x < cols and c.y >= 0 and c.y < rows:
 				UIThemeHelper.draw_clean_box(canvas, Rect2(grid_origin + Vector2(float(c.x) * cell_sz, float(c.y) * cell_sz), Vector2(cell_sz, cell_sz)), preview_col, preview_border)
 		if is_valid:
-			for sc in dredge_grid.get_synergy_pairs_for_preview(dragging_item, target_origin.x, target_origin.y, drag_rot):
+			for sc in dredge_grid.get_synergy_pairs_for_preview(dragging_item, target_origin.x, target_origin.y, steps):
 				var sr := Rect2(grid_origin + Vector2(float(sc.x) * cell_sz + 2.0, float(sc.y) * cell_sz + 2.0), Vector2(cell_sz - 4.0, cell_sz - 4.0))
 				canvas.draw_rect(sr, Color(1.0, 0.84, 0.22, 0.30), true)
 				canvas.draw_rect(sr, UIThemeHelper.COL_GOLD, false, 2.0)
 
-	var ghost_size := Vector2(float(eff_w) * cell_sz * 1.12, float(eff_h) * cell_sz * 1.12).round()
+	var ghost_cell_sz: float = cell_sz * 1.12
+	var ghost_size := Vector2(float(eff_w) * ghost_cell_sz, float(eff_h) * ghost_cell_sz).round()
 	var ghost_rect := Rect2((mouse_pos - ghost_size * 0.5).round(), ghost_size)
-	canvas.draw_rect(Rect2(ghost_rect.position + Vector2(5.0, 6.0), ghost_rect.size), Color(0.02, 0.02, 0.05, 0.50), true)
-	canvas.draw_rect(ghost_rect, Color(0.10, 0.09, 0.15, 0.90), true)
-	draw_item_sprite(canvas, ghost_rect, dragging_item, drag_rot, Color.WHITE)
-	canvas.draw_rect(ghost_rect, UIThemeHelper.COL_GOLD, false, 2.0)
-	canvas.draw_rect(Rect2(ghost_rect.position - Vector2(1.0, 1.0), ghost_rect.size + Vector2(2.0, 2.0)), UIThemeHelper.COL_OUTLINE_SOLID, false, 1.0)
+	if dragging_item.shape_offsets.is_empty():
+		canvas.draw_rect(Rect2(ghost_rect.position + Vector2(5.0, 6.0), ghost_rect.size), Color(0.02, 0.02, 0.05, 0.50), true)
+		canvas.draw_rect(ghost_rect, Color(0.10, 0.09, 0.15, 0.90), true)
+		draw_item_sprite(canvas, ghost_rect, dragging_item, steps, Color.WHITE)
+		canvas.draw_rect(ghost_rect, UIThemeHelper.COL_GOLD, false, 2.0)
+		canvas.draw_rect(Rect2(ghost_rect.position - Vector2(1.0, 1.0), ghost_rect.size + Vector2(2.0, 2.0)), UIThemeHelper.COL_OUTLINE_SOLID, false, 1.0)
+	else:
+		var local_cells: Array[Vector2i] = dragging_item.get_rotated_local_cells(steps)
+		_draw_polyomino_cells(canvas, ghost_rect.position, ghost_cell_sz, local_cells, Vector2i.ZERO, Color(0.14, 0.07, 0.22, 0.92), UIThemeHelper.COL_GOLD)
+		draw_item_sprite(canvas, ghost_rect, dragging_item, steps, Color.WHITE)
 
 	var hint_rect := Rect2(ghost_rect.position.x, ghost_rect.end.y + 5.0, maxf(110.0, ghost_rect.size.x), 24.0)
 	UIThemeHelper.draw_clean_box(canvas, hint_rect, Color(0.08, 0.07, 0.12, 0.92), UIThemeHelper.COL_BRASS_DIM)
@@ -600,31 +668,38 @@ func _category_label(cat: int) -> String:
 
 
 func draw_tooltip(canvas: CanvasItem, mouse_pos: Vector2, vp_size: Vector2, item: Contracts.GridItemData, font: Font) -> void:
-	var lines: Array[String] = ["%s (%dx%d)" % [_category_label(item.category), item.width, item.height]]
+	var shape_txt: String = ("%d Felder • Fluchform" % item.get_cell_count()) if not item.shape_offsets.is_empty() else ("%dx%d" % [item.width, item.height])
+	var lines: Array[String] = ["%s (%s)" % [_category_label(item.category), shape_txt]]
 	var mult: float = item.get_affix_stat_multiplier()
 	if item.category == Contracts.ItemCategory.CANNON or item.category == Contracts.ItemCategory.BOW_WEAPON:
 		var pellets: int = maxi(1, item.pellet_count)
 		var dmg_txt: String = "%.0f x%d" % [item.get_effective_damage(), pellets] if pellets > 1 else "%.0f" % item.get_effective_damage()
 		lines.append("Schaden: %s | Reload: %.2fs" % [dmg_txt, item.get_effective_reload_time(1.0)])
-		lines.append("Reichweite: %.0f px" % item.cannon_range)
+		lines.append("Reichweite: %.0f px" % item.get_effective_range())
 		if item.chain_shot_slow > 0.0:
 			lines.append("Bremst Ziel: -%d%% Tempo" % int(round(item.chain_shot_slow * 100.0)))
-		if item.burn_dps > 0.0:
-			lines.append("Brandschaden: %.1f DPS" % (item.burn_dps * mult))
+		var eff_burn: float = item.get_effective_burn_dps()
+		if eff_burn > 0.0:
+			lines.append("Brandschaden: %.1f DPS" % eff_burn)
 		if item.harpoon_pull > 0.0:
 			lines.append("Harpunen-Zug: %.0f Kraft" % (item.harpoon_pull * mult))
-	if item.reload_synergy_bonus > 0.0:
-		lines.append("Synergie: +%d%% Kanonen-Reload" % int(round(item.reload_synergy_bonus * 100.0)))
-		if item.burn_dps > 0.0 and item.category != Contracts.ItemCategory.CANNON:
+	if item.reload_synergy_bonus > 0.0 or item.get_cursed_bonus_synergy() > 0.0:
+		var syn_pct: int = int(round((item.reload_synergy_bonus * mult + item.get_cursed_bonus_synergy()) * 100.0))
+		lines.append("Synergie: +%d%% Kanonen-Reload" % syn_pct)
+		if item.burn_dps > 0.0 and item.category != Contracts.ItemCategory.CANNON and item.category != Contracts.ItemCategory.BOW_WEAPON:
 			lines.append("Verleiht Brandmunition (+%.1f DPS)" % (item.burn_dps * mult))
 	if item.explosion_hazard > 0.0: lines.append("Risiko: +%.0f Trefferschaden" % item.explosion_hazard)
-	if item.speed_bonus > 0.0: lines.append("Tempo: +%.1f kn" % (item.speed_bonus * mult))
+	var eff_spd: float = item.speed_bonus * mult + item.get_cursed_bonus_speed()
+	if eff_spd > 0.0: lines.append("Tempo: +%.1f kn" % eff_spd)
 	if item.turn_bonus > 0.0: lines.append("Wendung: +%.2f" % (item.turn_bonus * mult))
-	if item.max_hp_bonus > 0.0: lines.append("Max-HP: +%.0f" % (item.max_hp_bonus * mult))
+	var eff_hp: float = item.max_hp_bonus * mult + item.get_cursed_bonus_hp()
+	if eff_hp > 0.0: lines.append("Max-HP: +%.0f" % eff_hp)
 	if item.armor_bonus > 0.0: lines.append("Panzerung: +%.1f" % (item.armor_bonus * mult))
 	if item.ram_damage_bonus > 0.0: lines.append("Ramm-Schaden: +%.0f" % (item.ram_damage_bonus * mult))
 	if item.passive_repair_rate > 0.0: lines.append("Rumpf-Reparatur: +%.1f HP/s" % (item.passive_repair_rate * mult))
 	if item.vision_bonus > 0.0: lines.append("Ziel-Reichweite: +%.0f px" % (item.vision_bonus * mult))
+	if item.affix == Contracts.ItemAffix.CURSED:
+		lines.append("Fluch-Boni: +75% Leistung • -32% Reload • +1 Feld")
 	lines.append("Gewicht: %.1f kg • Wert: %d Gold" % [item.weight, item.get_effective_gold_value()])
 
 	var box_w: float = 360.0

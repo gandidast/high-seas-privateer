@@ -20,71 +20,130 @@ static func bake_item_grid_icon(
 ) -> ImageTexture:
 	var cw: int = maxi(1, width_cells)
 	var ch: int = maxi(1, height_cells)
-	var w: int = cw * GRID_CELL_PX
-	var h: int = ch * GRID_CELL_PX
-	var img := Draw.create_canvas(w, h)
+	var base_w: int = cw * GRID_CELL_PX
+	var base_h: int = ch * GRID_CELL_PX
+	var base_img := Draw.create_canvas(base_w, base_h)
 
 	match item_id:
 		"swivel_gun_1x2":
-			WeaponPainters.icon_swivel_gun(img, w, h, affix)
+			WeaponPainters.icon_swivel_gun(base_img, base_w, base_h, affix)
 		"bronze_cannon_2x2":
-			WeaponPainters.icon_bronze_cannon(img, w, h, affix)
+			WeaponPainters.icon_bronze_cannon(base_img, base_w, base_h, affix)
 		"carronade_2x1":
-			WeaponPainters.icon_carronade(img, w, h, affix)
+			WeaponPainters.icon_carronade(base_img, base_w, base_h, affix)
 		"organ_gun_2x2":
-			WeaponPainters.icon_organ_gun(img, w, h)
+			WeaponPainters.icon_organ_gun(base_img, base_w, base_h)
 		"twin_cannon_2x3":
-			WeaponPainters.icon_twin_cannon(img, w, h, affix)
+			WeaponPainters.icon_twin_cannon(base_img, base_w, base_h, affix)
 		"pitch_mortar_2x2":
-			WeaponPainters.icon_pitch_mortar(img, w, h)
+			WeaponPainters.icon_pitch_mortar(base_img, base_w, base_h)
 		"bow_chaser_1x2":
-			WeaponPainters.icon_bow_chaser(img, w, h)
+			WeaponPainters.icon_bow_chaser(base_img, base_w, base_h)
 		"chain_launcher_2x1":
-			WeaponPainters.icon_chain_launcher(img, w, h)
+			WeaponPainters.icon_chain_launcher(base_img, base_w, base_h)
 		"long_culverin_1x3":
-			WeaponPainters.icon_long_culverin(img, w, h)
+			WeaponPainters.icon_long_culverin(base_img, base_w, base_h)
 		"mortar_cannon_2x2":
-			WeaponPainters.icon_mortar_cannon(img, w, h)
+			WeaponPainters.icon_mortar_cannon(base_img, base_w, base_h)
 		"greek_fire_2x1":
-			WeaponPainters.icon_greek_fire(img, w, h)
+			WeaponPainters.icon_greek_fire(base_img, base_w, base_h)
 		"harpoon_ballista_2x1":
-			WeaponPainters.icon_harpoon_ballista(img, w, h)
+			WeaponPainters.icon_harpoon_ballista(base_img, base_w, base_h)
 		"powder_barrel_1x1":
-			WeaponPainters.icon_powder_barrel(img, w, h, false)
+			WeaponPainters.icon_powder_barrel(base_img, base_w, base_h, false)
 		"alchemist_powder_1x1":
-			WeaponPainters.icon_powder_barrel(img, w, h, true)
+			WeaponPainters.icon_powder_barrel(base_img, base_w, base_h, true)
 		"storm_sails_2x2":
-			CargoPainters.icon_storm_sails(img, w, h)
+			CargoPainters.icon_storm_sails(base_img, base_w, base_h)
 		"silk_top_sail_1x2":
-			CargoPainters.icon_silk_top_sail(img, w, h)
+			CargoPainters.icon_silk_top_sail(base_img, base_w, base_h)
 		"crows_nest_1x2":
-			CargoPainters.icon_crows_nest(img, w, h)
+			CargoPainters.icon_crows_nest(base_img, base_w, base_h)
 		"iron_ram_1x2":
-			CargoPainters.icon_iron_ram(img, w, h)
+			CargoPainters.icon_iron_ram(base_img, base_w, base_h)
 		"reinforced_ribs_1x3":
-			CargoPainters.icon_reinforced_ribs(img, w, h)
+			CargoPainters.icon_reinforced_ribs(base_img, base_w, base_h)
 		"copper_plating_2x2":
-			CargoPainters.icon_copper_plating(img, w, h)
+			CargoPainters.icon_copper_plating(base_img, base_w, base_h)
 		"gunner_quarters_2x2":
-			CargoPainters.icon_gunner_quarters(img, w, h)
+			CargoPainters.icon_gunner_quarters(base_img, base_w, base_h)
 		"carpenter_workshop_2x2":
-			CargoPainters.icon_carpenter_workshop(img, w, h)
+			CargoPainters.icon_carpenter_workshop(base_img, base_w, base_h)
 		"spice_crates_1x2":
-			CargoPainters.icon_spice_crates(img, w, h)
+			CargoPainters.icon_spice_crates(base_img, base_w, base_h)
 		"rum_casks_1x1":
-			CargoPainters.icon_rum_cask(img, w, h)
+			CargoPainters.icon_rum_cask(base_img, base_w, base_h)
 		"royal_treasure_2x2":
-			CargoPainters.icon_royal_treasure(img, w, h)
+			CargoPainters.icon_royal_treasure(base_img, base_w, base_h)
 		"salvage_relic_1x2":
-			CargoPainters.icon_salvage_relic(img, w, h)
+			CargoPainters.icon_salvage_relic(base_img, base_w, base_h)
 		"kraken_tentacle_trophy_2x2":
-			CargoPainters.icon_kraken_trophy(img, w, h)
+			CargoPainters.icon_kraken_trophy(base_img, base_w, base_h)
 		_:
-			_paint_category_fallback(img, w, h, category, rarity, affix)
+			_paint_category_fallback(base_img, base_w, base_h, category, rarity, affix)
+
+	var img: Image = base_img
+	if affix == Contracts.ItemAffix.CURSED:
+		var cells: Array[Vector2i] = Contracts.GridItemData.compute_cursed_shape(cw, ch)
+		var max_cx: int = cw
+		var max_cy: int = ch
+		for c in cells:
+			max_cx = maxi(max_cx, c.x + 1)
+			max_cy = maxi(max_cy, c.y + 1)
+		img = Draw.create_canvas(max_cx * GRID_CELL_PX, max_cy * GRID_CELL_PX)
+		img.blit_rect(base_img, Rect2i(0, 0, base_w, base_h), Vector2i.ZERO)
+		if cells.size() > cw * ch:
+			_paint_cursed_eldritch_growth(img, cells[cells.size() - 1], cw, ch)
 
 	Draw.apply_affix_accents(img, affix)
-	Draw.apply_pixel_outline(img, Draw.OUTLINE_COLOR)
+	var outline_col: Color = Color(0.18, 0.04, 0.28, 1.0) if affix == Contracts.ItemAffix.CURSED else Draw.OUTLINE_COLOR
+	Draw.apply_pixel_outline(img, outline_col)
 	return ImageTexture.create_from_image(img)
+
+
+static func _paint_cursed_eldritch_growth(img: Image, extra_cell: Vector2i, cw: int, ch: int) -> void:
+	var px0: int = extra_cell.x * GRID_CELL_PX
+	var py0: int = extra_cell.y * GRID_CELL_PX
+	var eld_dark := Color(0.24, 0.09, 0.36, 1.0)
+	var eld_mid := Color(0.46, 0.16, 0.62, 1.0)
+	var eld_hi := Color(0.76, 0.32, 0.88, 1.0)
+	var eye_glow := Color(0.32, 0.98, 0.78, 1.0)
+	var eye_core := Color(0.96, 0.22, 0.42, 1.0)
+	var suction := Color(0.84, 0.44, 0.94, 1.0)
+
+	# Bridge tendrils from adjacent base cell into the extra cursed cell
+	if extra_cell.x >= cw:
+		Draw.rect(img, px0 - 5, py0 + 7, 11, 10, eld_dark)
+		Draw.rect(img, px0 - 4, py0 + 9, 10, 6, eld_mid)
+		Draw.rect(img, px0 + 3, py0 + 5, 13, 14, eld_dark)
+		Draw.rect(img, px0 + 5, py0 + 7, 10, 10, eld_mid)
+		# Curled Abyssal Horn / Tentacle tip
+		Draw.rect(img, px0 + 13, py0 + 4, 6, 7, eld_dark)
+		Draw.rect(img, px0 + 15, py0 + 3, 5, 5, eld_hi)
+		Draw.rect(img, px0 + 13, py0 + 15, 6, 5, eld_mid)
+	else:
+		Draw.rect(img, px0 + 7, py0 - 5, 10, 11, eld_dark)
+		Draw.rect(img, px0 + 9, py0 - 4, 6, 10, eld_mid)
+		Draw.rect(img, px0 + 5, py0 + 3, 14, 13, eld_dark)
+		Draw.rect(img, px0 + 7, py0 + 5, 10, 10, eld_mid)
+		Draw.rect(img, px0 + 4, py0 + 14, 7, 6, eld_dark)
+		Draw.rect(img, px0 + 14, py0 + 13, 6, 6, eld_hi)
+
+	# Glowing spectral abyssal eye in center of the extra cell
+	Draw.rect(img, px0 + 8, py0 + 9, 7, 6, eld_dark)
+	Draw.rect(img, px0 + 9, py0 + 10, 5, 4, eye_glow)
+	Draw.rect(img, px0 + 11, py0 + 10, 1, 4, eye_core)
+	img.set_pixel(px0 + 9, py0 + 10, Color(0.92, 1.0, 0.96, 1.0))
+
+	# Suction / bone spikes & glowing runes
+	img.set_pixel(px0 + 6, py0 + 6, suction)
+	img.set_pixel(px0 + 16, py0 + 6, suction)
+	img.set_pixel(px0 + 6, py0 + 17, eye_glow)
+	img.set_pixel(px0 + 17, py0 + 16, suction)
+	if extra_cell.y < ch:
+		img.set_pixel(px0 - 2, py0 + 11, eye_glow)
+	else:
+		img.set_pixel(px0 + 11, py0 - 2, eye_glow)
 
 
 static func _paint_category_fallback(

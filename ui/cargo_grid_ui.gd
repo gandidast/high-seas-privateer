@@ -20,8 +20,8 @@ var _renderer: CargoSlotRenderer = CargoSlotRenderer.new()
 var _dragging_item: Contracts.GridItemData = null
 var _drag_from_grid: bool = false
 var _drag_orig_pos: Vector2i = Vector2i(-1, -1)
-var _drag_orig_rot: bool = false
-var _drag_rot: bool = false
+var _drag_orig_rot: int = 0
+var _drag_rot: int = 0
 var _drag_press_pos: Vector2 = Vector2.ZERO
 var _drag_moved: bool = false
 
@@ -136,7 +136,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if rotate_pressed:
 		if _dragging_item != null:
-			_drag_rot = not _drag_rot
+			_next_drag_rotation()
 			queue_redraw()
 			get_viewport().set_input_as_handled()
 		elif _hovered_item != null and dredge_grid != null and (_hovered_item in dredge_grid.placed_items):
@@ -179,7 +179,7 @@ func _gui_input(event: InputEvent) -> void:
 
 		if mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
 			if _dragging_item != null:
-				_drag_rot = not _drag_rot
+				_next_drag_rotation()
 				queue_redraw()
 				accept_event()
 				return
@@ -249,16 +249,23 @@ func _screen_to_grid_cell(screen_pos: Vector2, panel_pos: Vector2) -> Vector2i:
 	return Vector2i(gx, gy)
 
 
+func _next_drag_rotation() -> void:
+	if _dragging_item == null:
+		return
+	var max_steps: int = 4 if not _dragging_item.shape_offsets.is_empty() else (2 if _dragging_item.width != _dragging_item.height else 1)
+	if max_steps > 1:
+		_drag_rot = (_drag_rot + 1) % max_steps
+
+
 func _get_drag_target_origin(screen_pos: Vector2, panel_pos: Vector2) -> Vector2i:
 	if _dragging_item == null:
 		return Vector2i(-1, -1)
 	var layout: Dictionary = CargoSlotRenderer.compute_grid_layout(dredge_grid)
 	var cell_sz: float = float(layout["cell_size"])
 	var grid_origin: Vector2 = (panel_pos + (layout["origin"] as Vector2)).round()
-	var eff_w: int = _dragging_item.height if _drag_rot else _dragging_item.width
-	var eff_h: int = _dragging_item.width if _drag_rot else _dragging_item.height
+	var eff: Vector2i = _dragging_item.get_effective_bbox(_drag_rot)
 	var rel: Vector2 = screen_pos - grid_origin
-	var top_left: Vector2 = rel - Vector2(float(eff_w) * cell_sz * 0.5, float(eff_h) * cell_sz * 0.5) + Vector2(cell_sz * 0.5, cell_sz * 0.5)
+	var top_left: Vector2 = rel - Vector2(float(eff.x) * cell_sz * 0.5, float(eff.y) * cell_sz * 0.5) + Vector2(cell_sz * 0.5, cell_sz * 0.5)
 	return Vector2i(int(floor(top_left.x / cell_sz)), int(floor(top_left.y / cell_sz)))
 
 
@@ -315,8 +322,8 @@ func _try_begin_drag(screen_pos: Vector2, panel_pos: Vector2) -> void:
 			_dragging_item = grid_item
 			_drag_from_grid = true
 			_drag_orig_pos = grid_item.grid_pos
-			_drag_orig_rot = grid_item.rotated
-			_drag_rot = grid_item.rotated
+			_drag_orig_rot = grid_item.rot_steps
+			_drag_rot = grid_item.rot_steps
 			_drag_press_pos = screen_pos
 			_drag_moved = false
 			dredge_grid.remove_item(grid_item, false)
@@ -327,8 +334,8 @@ func _try_begin_drag(screen_pos: Vector2, panel_pos: Vector2) -> void:
 		_dragging_item = stash_item
 		_drag_from_grid = false
 		_drag_orig_pos = Vector2i(-1, -1)
-		_drag_orig_rot = stash_item.rotated
-		_drag_rot = stash_item.rotated
+		_drag_orig_rot = stash_item.rot_steps
+		_drag_rot = stash_item.rot_steps
 		_drag_press_pos = screen_pos
 		_drag_moved = false
 
@@ -344,6 +351,7 @@ func _try_drop_drag(screen_pos: Vector2, panel_pos: Vector2) -> void:
 			return
 	if Rect2(panel_pos + STASH_RECT_REL.position, STASH_RECT_REL.size).has_point(screen_pos):
 		_dragging_item.rotated = false
+		_dragging_item.rot_steps = 0
 		dredge_grid.add_to_stash(_dragging_item)
 		_dragging_item = null
 		return

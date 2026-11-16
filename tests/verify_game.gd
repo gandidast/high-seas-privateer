@@ -269,6 +269,33 @@ func _test_dredge_grid_rotation_synergy_and_stats() -> void:
 	_assert_true(grid.place_item(galleon_bow, 8, 3, true), "bow_chaser_1x2 rotated (2x1) must mount on War Galleon (8,3)->(9,3) BOW")
 	_assert_true(grid.current_stats.bow_cannons.size() == 1, "War Galleon bow chaser must compile into bow_cannons")
 
+	# 8. Verify 5-tier affix scaling (Selten / Meisterhaft / Verflucht), +1 polyomino shapes & L-corner nesting
+	var c_rare := ItemDatabase.create_item("carronade_2x1", Contracts.ItemAffix.RARE)
+	var c_mast := ItemDatabase.create_item("carronade_2x1", Contracts.ItemAffix.MASTERWORK)
+	var c_curs := ItemDatabase.create_item("carronade_2x1", Contracts.ItemAffix.CURSED)
+	_assert_true(is_equal_approx(c_rare.get_affix_stat_multiplier(), 1.25) and c_rare.get_display_name().begins_with("Selten:"), "RARE affix must grant 1.25x & 'Selten:' prefix")
+	_assert_true(is_equal_approx(c_mast.get_affix_stat_multiplier(), 1.45) and c_mast.get_display_name().begins_with("Meisterhaft:"), "MASTERWORK affix must grant 1.45x & 'Meisterhaft:' prefix")
+	_assert_true(is_equal_approx(c_curs.get_affix_stat_multiplier(), 1.75) and c_curs.get_display_name().begins_with("Verflucht:"), "CURSED affix must grant 1.75x & 'Verflucht:' prefix")
+	_assert_true(c_curs.get_effective_range() > c_curs.cannon_range and c_curs.get_effective_burn_dps() >= 5.0, "CURSED weapon must grant extra range (+15%) and innate abyssal burn (+5 DPS)")
+	_assert_true(c_curs.get_cell_count() == 3, "CURSED 2x1 item must occupy 2+1=3 cells (got %d)" % c_curs.get_cell_count())
+
+	var test_grid := DredgeGrid.new()
+	test_grid.set_hull_tier(Contracts.ShipClass.WAR_GALLEON)
+	test_grid.placed_items.clear()
+	test_grid.stash_items.clear()
+	var cursed_spice := ItemDatabase.create_item("spice_crates_1x2", Contracts.ItemAffix.CURSED)
+	_assert_true(cursed_spice.get_cell_count() == 3 and cursed_spice.get_effective_bbox(0) == Vector2i(2, 2), "CURSED 1x2 item must have L-shape of 3 cells inside 2x2 bbox")
+	_assert_true(test_grid.place_item(cursed_spice, 0, 1, 0), "Must place CURSED L-shape at (0,1) rot=0")
+	var corner_rum := ItemDatabase.create_item("rum_casks_1x1", Contracts.ItemAffix.STANDARD)
+	_assert_true(test_grid.can_place_item(corner_rum, 1, 1, 0) and test_grid.place_item(corner_rum, 1, 1, 0), "1x1 item must fit inside the open empty corner (1,1) of the CURSED L-shape")
+	var collide_rum := ItemDatabase.create_item("rum_casks_1x1", Contracts.ItemAffix.STANDARD)
+	_assert_true(not test_grid.can_place_item(collide_rum, 1, 2, 0), "Protruding cursed cell (1,2) must block overlapping placement")
+	_assert_true(test_grid.rotate_item_in_grid(cursed_spice) or cursed_spice.get_rotated_local_cells(1) != cursed_spice.get_rotated_local_cells(0), "CURSED polyomino must support 4-step rotation")
+	var raw_spice: Dictionary = cursed_spice.to_dict()
+	var restored_spice := Contracts.GridItemData.from_dict(raw_spice)
+	_assert_true(restored_spice.affix == Contracts.ItemAffix.CURSED and restored_spice.get_cell_count() == 3, "GridItemData to_dict/from_dict must preserve CURSED shape")
+	test_grid.queue_free()
+
 	grid.queue_free()
 	print("  -> [PASS] 6-class grids, BOW slots, downsize stash eviction, 27 items & synergy stats verified.")
 
@@ -492,6 +519,11 @@ func _test_visual_pipeline_and_headless_server_boot() -> void:
 			item_data.affix
 		)
 		_assert_true(icon_tex != null and icon_tex.get_width() == item_data.width * 24 and icon_tex.get_height() == item_data.height * 24, "Item '%s' must bake a %dx%d grid icon texture" % [item_id, item_data.width * 24, item_data.height * 24])
+
+	var cursed_cannon_tex: ImageTexture = ProceduralShipBaker.bake_item_grid_icon("bronze_cannon_2x2", Contracts.ItemCategory.CANNON, 2, 2, Contracts.ItemRarity.RARE, Contracts.ItemAffix.CURSED)
+	_assert_true(cursed_cannon_tex != null and cursed_cannon_tex.get_width() == 72 and cursed_cannon_tex.get_height() == 48, "CURSED 2x2 item icon must expand to 3x2 bbox (72x48 px)")
+	var cursed_spice_tex: ImageTexture = ProceduralShipBaker.bake_item_grid_icon("spice_crates_1x2", Contracts.ItemCategory.CARGO, 1, 2, Contracts.ItemRarity.UNCOMMON, Contracts.ItemAffix.CURSED)
+	_assert_true(cursed_spice_tex != null and cursed_spice_tex.get_width() == 48 and cursed_spice_tex.get_height() == 48, "CURSED 1x2 item icon must expand to 2x2 L-bbox (48x48 px)")
 
 	var bow_mod_tex: ImageTexture = ProceduralShipBaker.bake_module_texture(Contracts.ItemCategory.BOW_WEAPON, Contracts.ItemRarity.RARE)
 	_assert_true(bow_mod_tex != null and bow_mod_tex.get_width() > 0, "ProceduralShipBaker must bake BOW_WEAPON module texture")

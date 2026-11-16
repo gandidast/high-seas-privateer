@@ -140,7 +140,12 @@ func spawn_ghost_wreck(world_pos: Vector2) -> Contracts.LootDropData:
 	var gear_count: int = _rng.randi_range(1, 2)
 	for _i in range(gear_count):
 		var picked_id: String = GHOST_WRECK_ITEMS[_rng.randi_range(0, GHOST_WRECK_ITEMS.size() - 1)]
-		var afx: int = Contracts.ItemAffix.CURSED if _rng.randf() < 0.40 else Contracts.ItemAffix.MASTERWORK
+		var r_afx: float = _rng.randf()
+		var afx: int = Contracts.ItemAffix.RARE
+		if r_afx < 0.15:
+			afx = Contracts.ItemAffix.CURSED
+		elif r_afx < 0.50:
+			afx = Contracts.ItemAffix.MASTERWORK
 		var item := _create_item_by_id(picked_id, afx)
 		if item != null:
 			drop.items.append(item)
@@ -158,7 +163,7 @@ func spawn_salvage_target(world_pos: Vector2, quest_id: String) -> Contracts.Loo
 	drop.quest_id = quest_id
 	drop.lifetime = 360.0
 
-	var relic := _create_item_by_id("salvage_relic_1x2", Contracts.ItemAffix.MASTERWORK)
+	var relic := _create_item_by_id("salvage_relic_1x2", Contracts.ItemAffix.RARE)
 	if relic != null:
 		drop.items.append(relic)
 	var extra := _create_random_item(false)
@@ -205,7 +210,7 @@ func spawn_ship_wreck_loot(
 	if is_high_tier:
 		if is_treasure_galleon:
 			drop.gold = _rng.randi_range(240, 360)
-			var chest := _create_item_by_id("royal_treasure_2x2", Contracts.ItemAffix.MASTERWORK)
+			var chest := _create_item_by_id("royal_treasure_2x2", Contracts.ItemAffix.RARE)
 			if chest != null:
 				drop.items.append(chest)
 		elif is_bounty_boss:
@@ -243,7 +248,7 @@ func spawn_ship_wreck_loot(
 		var gear_chance: float = 0.55 if is_merchant else 0.78
 		if _rng.randf() < gear_chance:
 			var low_id: String = TIER_01_GEAR[_rng.randi_range(0, TIER_01_GEAR.size() - 1)]
-			var low_afx: int = Contracts.ItemAffix.MASTERWORK if _rng.randf() < 0.25 else Contracts.ItemAffix.STANDARD
+			var low_afx: int = Contracts.ItemAffix.RARE if _rng.randf() < 0.25 else Contracts.ItemAffix.STANDARD
 			var gear_item := _create_item_by_id(low_id, low_afx)
 			if gear_item != null:
 				drop.items.append(gear_item)
@@ -271,11 +276,12 @@ func spawn_fort_loot(world_pos: Vector2) -> Contracts.LootDropData:
 	drop.is_salvage_target = false
 	drop.lifetime = 75.0
 
-	var chest := _create_item_by_id("royal_treasure_2x2", Contracts.ItemAffix.STANDARD)
+	var chest := _create_item_by_id("royal_treasure_2x2", Contracts.ItemAffix.RARE)
 	if chest != null:
 		drop.items.append(chest)
 	var gear_id: String = GHOST_WRECK_ITEMS[_rng.randi_range(0, GHOST_WRECK_ITEMS.size() - 1)]
-	var gear := _create_item_by_id(gear_id, Contracts.ItemAffix.MASTERWORK)
+	var fort_afx: int = Contracts.ItemAffix.CURSED if _rng.randf() < 0.20 else Contracts.ItemAffix.MASTERWORK
+	var gear := _create_item_by_id(gear_id, fort_afx)
 	if gear != null:
 		drop.items.append(gear)
 
@@ -475,14 +481,18 @@ func _count_flotsam() -> int:
 func _roll_high_tier_affix(elite: bool) -> int:
 	var roll: float = _rng.randf()
 	if elite:
-		if roll < 0.45:
+		if roll < 0.38:
+			return Contracts.ItemAffix.RARE
+		if roll < 0.76:
 			return Contracts.ItemAffix.MASTERWORK
-		if roll < 0.72:
+		if roll < 0.92:
 			return Contracts.ItemAffix.CURSED
 		return Contracts.ItemAffix.STANDARD
-	if roll < 0.40:
+	if roll < 0.38:
+		return Contracts.ItemAffix.RARE
+	if roll < 0.60:
 		return Contracts.ItemAffix.MASTERWORK
-	if roll < 0.52:
+	if roll < 0.66:
 		return Contracts.ItemAffix.CURSED
 	return Contracts.ItemAffix.STANDARD
 
@@ -529,11 +539,13 @@ func _create_item_by_id(item_id: String, affix: int) -> Contracts.GridItemData:
 
 func _roll_fallback_affix() -> int:
 	var roll: float = _rng.randf()
-	if roll < 0.22:
+	if roll < 0.16:
 		return Contracts.ItemAffix.RUSTED
-	elif roll < 0.72:
+	elif roll < 0.68:
 		return Contracts.ItemAffix.STANDARD
-	elif roll < 0.90:
+	elif roll < 0.88:
+		return Contracts.ItemAffix.RARE
+	elif roll < 0.97:
 		return Contracts.ItemAffix.MASTERWORK
 	return Contracts.ItemAffix.CURSED
 

@@ -481,16 +481,20 @@ static func create_item(item_id: String, affix: int = Contracts.ItemAffix.STANDA
 	copy.instance_id = "%s_%d_%d" % [copy.id, _instance_counter, Time.get_ticks_usec()]
 	copy.grid_pos = Vector2i(-1, -1)
 	copy.rotated = false
+	copy.rot_steps = 0
+	copy.ensure_affix_shape_and_bonuses()
 	return copy
 
 
 static func roll_random_affix(rng: RandomNumberGenerator = null) -> int:
 	var roll: float = rng.randf() if rng != null else randf()
-	if roll < 0.18:
+	if roll < 0.16:
 		return Contracts.ItemAffix.RUSTED
-	elif roll < 0.72:
+	elif roll < 0.68:
 		return Contracts.ItemAffix.STANDARD
-	elif roll < 0.92:
+	elif roll < 0.88:
+		return Contracts.ItemAffix.RARE
+	elif roll < 0.97:
 		return Contracts.ItemAffix.MASTERWORK
 	else:
 		return Contracts.ItemAffix.CURSED
@@ -561,20 +565,24 @@ static func create_tiered_weapon(tier: int, rng: RandomNumberGenerator = null) -
 	var roll: float = rng.randf() if rng != null else randf()
 	var affix: int = Contracts.ItemAffix.STANDARD
 	if clamped_tier >= 4:
-		if roll < 0.08:
+		if roll < 0.05:
 			affix = Contracts.ItemAffix.RUSTED
-		elif roll < 0.55:
+		elif roll < 0.35:
 			affix = Contracts.ItemAffix.STANDARD
-		elif roll < 0.85:
+		elif roll < 0.70:
+			affix = Contracts.ItemAffix.RARE
+		elif roll < 0.90:
 			affix = Contracts.ItemAffix.MASTERWORK
 		else:
 			affix = Contracts.ItemAffix.CURSED
 	elif clamped_tier >= 2:
-		if roll < 0.12:
+		if roll < 0.10:
 			affix = Contracts.ItemAffix.RUSTED
-		elif roll < 0.68:
+		elif roll < 0.52:
 			affix = Contracts.ItemAffix.STANDARD
-		elif roll < 0.90:
+		elif roll < 0.82:
+			affix = Contracts.ItemAffix.RARE
+		elif roll < 0.95:
 			affix = Contracts.ItemAffix.MASTERWORK
 		else:
 			affix = Contracts.ItemAffix.CURSED

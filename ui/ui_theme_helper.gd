@@ -96,10 +96,12 @@ static func affix_color(affix: int, rarity: int) -> Color:
 	match affix:
 		Contracts.ItemAffix.RUSTED:
 			return Color(0.72, 0.58, 0.48, 1.0)
+		Contracts.ItemAffix.RARE:
+			return Color(0.38, 0.84, 0.98, 1.0)
 		Contracts.ItemAffix.MASTERWORK:
-			return Color(0.42, 0.90, 0.96, 1.0)
+			return Color(1.0, 0.84, 0.30, 1.0)
 		Contracts.ItemAffix.CURSED:
-			return Color(0.86, 0.46, 0.96, 1.0)
+			return Color(0.92, 0.30, 0.96, 1.0)
 		_:
 			match rarity:
 				Contracts.ItemRarity.UNCOMMON:

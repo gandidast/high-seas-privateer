@@ -58,7 +58,12 @@ func generate_harbor_shop(island_idx: int, harbor_shops: Dictionary, rng: Random
 		var pick_idx: int = rng.randi_range(0, pool.size() - 1)
 		var item_id: String = pool[pick_idx]
 		pool.remove_at(pick_idx)
-		var affix: int = Contracts.ItemAffix.MASTERWORK if rng.randf() < 0.24 else Contracts.ItemAffix.STANDARD
+		var af_roll: float = rng.randf()
+		var affix: int = Contracts.ItemAffix.STANDARD
+		if af_roll < 0.08:
+			affix = Contracts.ItemAffix.MASTERWORK
+		elif af_roll < 0.32:
+			affix = Contracts.ItemAffix.RARE
 		var item: Contracts.GridItemData = create_shop_item(item_id, affix)
 		if item != null:
 			var price: int = maxi(85, item.get_effective_gold_value() + 30)
@@ -186,13 +191,7 @@ func refresh_sell_list(sell_list: VBoxContainer, tab_sell_btn: Button, player_gr
 		row.add_child(make_item_icon_rect(item, 32.0))
 
 		var tag: String = "[Lager] " if in_stash else "[Deck] "
-		var col: Color = UIThemeHelper.COL_IVORY
-		if item.affix == Contracts.ItemAffix.MASTERWORK:
-			col = UIThemeHelper.COL_TURQUOISE
-		elif item.affix == Contracts.ItemAffix.CURSED:
-			col = Color(0.86, 0.48, 0.96)
-		elif item.affix == Contracts.ItemAffix.RUSTED:
-			col = Color(0.72, 0.62, 0.55)
+		var col: Color = UIThemeHelper.affix_color(item.affix, item.rarity)
 
 		var lbl: Label = UIThemeHelper.make_label(tag + item.get_display_name(), 15, col)
 		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL

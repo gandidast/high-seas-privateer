@@ -45,8 +45,9 @@ enum ItemRarity {
 enum ItemAffix {
 	STANDARD = 0,        ## Standard (1.0x stats)
 	RUSTED = 1,          ## Verrostet (-20% performance, -35% value)
-	MASTERWORK = 2,      ## Meisterhaft (+25% performance, +60% value)
-	CURSED = 3           ## Verflucht (+45% damage/speed, but adds hull/explosion penalty)
+	MASTERWORK = 2,      ## Meisterhaft (+45% performance, +100% value)
+	CURSED = 3,          ## Verflucht (+75% mega bonuses + special effects, +1 weird cell shape)
+	RARE = 4             ## Selten (+25% performance, +55% value)
 }
 
 enum ItemCategory {
@@ -319,14 +320,99 @@ class GridItemData extends Resource:
 	var instance_id: String = ""
 	var grid_pos: Vector2i = Vector2i(-1, -1)
 	var rotated: bool = false
+	var rot_steps: int = 0
+	var shape_offsets: Array[Vector2i] = []
+
+	static func compute_cursed_shape(base_w: int, base_h: int) -> Array[Vector2i]:
+		var cells: Array[Vector2i] = []
+		var w: int = maxi(1, base_w)
+		var h: int = maxi(1, base_h)
+		for dy in range(h):
+			for dx in range(w):
+				cells.append(Vector2i(dx, dy))
+		var extra: Vector2i
+		if w == 1 and h == 1:
+			extra = Vector2i(1, 0)
+		elif w == 2 and h == 1:
+			extra = Vector2i(0, 1)
+		elif w == 1 and h == 2:
+			extra = Vector2i(1, 1)
+		elif w == 1 and h == 3:
+			extra = Vector2i(1, 1)
+		elif w == 2 and h == 2:
+			extra = Vector2i(2, 1)
+		elif w == 2 and h == 3:
+			extra = Vector2i(2, 1)
+		else:
+			extra = Vector2i(w, h / 2)
+		if not (extra in cells):
+			cells.append(extra)
+		return cells
+
+	func ensure_affix_shape_and_bonuses() -> void:
+		if affix == ItemAffix.CURSED:
+			if shape_offsets.is_empty():
+				shape_offsets = compute_cursed_shape(width, height)
+		else:
+			shape_offsets.clear()
+
+	func get_base_local_cells() -> Array[Vector2i]:
+		if not shape_offsets.is_empty():
+			return shape_offsets
+		var cells: Array[Vector2i] = []
+		for dy in range(maxi(1, height)):
+			for dx in range(maxi(1, width)):
+				cells.append(Vector2i(dx, dy))
+		return cells
+
+	func get_base_bbox() -> Vector2i:
+		if shape_offsets.is_empty():
+			return Vector2i(maxi(1, width), maxi(1, height))
+		var max_x: int = 0
+		var max_y: int = 0
+		for c in shape_offsets:
+			max_x = maxi(max_x, c.x)
+			max_y = maxi(max_y, c.y)
+		return Vector2i(max_x + 1, max_y + 1)
+
+	func get_rotated_local_cells(p_rot: int = -1) -> Array[Vector2i]:
+		var step: int = ((rot_steps if (rot_steps != 0 or not rotated) else 1) if p_rot < 0 else p_rot) & 3
+		var base_cells: Array[Vector2i] = get_base_local_cells()
+		if step == 0:
+			return base_cells.duplicate()
+		var bbox: Vector2i = get_base_bbox()
+		var bw: int = bbox.x
+		var bh: int = bbox.y
+		var out: Array[Vector2i] = []
+		for c in base_cells:
+			match step:
+				1:
+					out.append(Vector2i(bh - 1 - c.y, c.x))
+				2:
+					out.append(Vector2i(bw - 1 - c.x, bh - 1 - c.y))
+				3:
+					out.append(Vector2i(c.y, bw - 1 - c.x))
+				_:
+					out.append(c)
+		return out
+
+	func get_effective_bbox(p_rot: int = -1) -> Vector2i:
+		var step: int = ((rot_steps if (rot_steps != 0 or not rotated) else 1) if p_rot < 0 else p_rot) & 3
+		var bbox: Vector2i = get_base_bbox()
+		return Vector2i(bbox.y, bbox.x) if (step % 2 == 1) else bbox
+
+	func get_cell_count() -> int:
+		return get_base_local_cells().size()
 
 	func get_effective_size() -> Vector2i:
-		return Vector2i(height, width) if rotated else Vector2i(width, height)
+		return get_effective_bbox(-1)
 
 	func get_affix_prefix() -> String:
 		match affix:
 			ItemAffix.RUSTED:
 				return "Verrostet: "
+			ItemAffix.RARE:
+				return "Selten: "
 			ItemAffix.MASTERWORK:
 				return "Meisterhaft: "
 			ItemAffix.CURSED:
@@ -341,10 +427,12 @@ class GridItemData extends Resource:
 		match affix:
 			ItemAffix.RUSTED:
 				return 0.80
-			ItemAffix.MASTERWORK:
+			ItemAffix.RARE:
 				return 1.25
-			ItemAffix.CURSED:
+			ItemAffix.MASTERWORK:
 				return 1.45
+			ItemAffix.CURSED:
+				return 1.75
 			_:
 				return 1.0
 
@@ -355,20 +443,52 @@ class GridItemData extends Resource:
 		var base_reload: float = maxf(0.4, reload_time)
 		if affix == ItemAffix.RUSTED:
 			base_reload *= 1.20
-		elif affix == ItemAffix.MASTERWORK:
+		elif affix == ItemAffix.RARE:
 			base_reload *= 0.85
-		elif affix == ItemAffix.CURSED:
+		elif affix == ItemAffix.MASTERWORK:
 			base_reload *= 0.78
-		return maxf(0.35, base_reload / maxf(0.25, synergy_mult))
+		elif affix == ItemAffix.CURSED:
+			base_reload *= 0.68
+		return maxf(0.32, base_reload / maxf(0.25, synergy_mult))
+
+	func get_effective_range() -> float:
+		if affix == ItemAffix.CURSED:
+			return cannon_range * 1.15
+		if affix == ItemAffix.MASTERWORK:
+			return cannon_range * 1.06
+		return cannon_range
+
+	func get_effective_burn_dps() -> float:
+		var base_burn: float = burn_dps * get_affix_stat_multiplier()
+		if affix == ItemAffix.CURSED and (category == ItemCategory.CANNON or category == ItemCategory.BOW_WEAPON):
+			base_burn += 5.0
+		return base_burn
+
+	func get_cursed_bonus_hp() -> float:
+		if affix == ItemAffix.CURSED and (category == ItemCategory.HULL or category == ItemCategory.SAIL or category == ItemCategory.CREW_MOD):
+			return 25.0
+		return 0.0
+
+	func get_cursed_bonus_speed() -> float:
+		if affix == ItemAffix.CURSED and category == ItemCategory.SAIL:
+			return 12.0
+		return 0.0
+
+	func get_cursed_bonus_synergy() -> float:
+		if affix == ItemAffix.CURSED and (category == ItemCategory.POWDER_BARREL or category == ItemCategory.CREW_MOD):
+			return 0.15
+		return 0.0
 
 	func get_effective_gold_value() -> int:
 		match affix:
 			ItemAffix.RUSTED:
 				return maxi(1, int(round(float(gold_value) * 0.65)))
+			ItemAffix.RARE:
+				return int(round(float(gold_value) * 1.55))
 			ItemAffix.MASTERWORK:
-				return int(round(float(gold_value) * 1.60))
+				return int(round(float(gold_value) * 2.00))
 			ItemAffix.CURSED:
-				return int(round(float(gold_value) * 1.35))
+				return int(round(float(gold_value) * 2.60))
 			_:
 				return gold_value
 
@@ -408,9 +528,17 @@ class GridItemData extends Resource:
 		copy.instance_id = "%s_%d" % [id, Time.get_ticks_usec()]
 		copy.grid_pos = grid_pos
 		copy.rotated = rotated
+		copy.rot_steps = rot_steps
+		if copy.affix == affix and not shape_offsets.is_empty():
+			copy.shape_offsets = shape_offsets.duplicate()
+		else:
+			copy.ensure_affix_shape_and_bonuses()
 		return copy
 
 	func to_dict() -> Dictionary:
+		var raw_shape: Array = []
+		for c in shape_offsets:
+			raw_shape.append([c.x, c.y])
 		return {
 			"id": id,
 			"name": name,
@@ -446,7 +574,9 @@ class GridItemData extends Resource:
 			"instance_id": instance_id,
 			"grid_x": grid_pos.x,
 			"grid_y": grid_pos.y,
-			"rotated": rotated
+			"rotated": rotated,
+			"rot_steps": rot_steps,
+			"shape_offsets": raw_shape
 		}
 
 	static func from_dict(d: Dictionary) -> GridItemData:
@@ -490,6 +620,14 @@ class GridItemData extends Resource:
 		item.instance_id = str(d.get("instance_id", "%s_net" % item.id))
 		item.grid_pos = Vector2i(int(d.get("grid_x", -1)), int(d.get("grid_y", -1)))
 		item.rotated = bool(d.get("rotated", false))
+		item.rot_steps = int(d.get("rot_steps", 1 if item.rotated else 0)) & 3
+		item.shape_offsets.clear()
+		var raw_shape: Variant = d.get("shape_offsets", [])
+		if raw_shape is Array:
+			for pt in raw_shape:
+				if pt is Array and (pt as Array).size() >= 2:
+					item.shape_offsets.append(Vector2i(int(pt[0]), int(pt[1])))
+		item.ensure_affix_shape_and_bonuses()
 		return item
 
 
