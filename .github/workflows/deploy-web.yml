@@ -1,0 +1,112 @@
+name: Deploy Web Build to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+env:
+  GODOT_VERSION: "4.7.2-stable"
+  GODOT_TEMPLATE_DIR: "4.7.2.stable"
+
+jobs:
+  build:
+    name: Export Godot Web (Single-Threaded)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache Godot binary and export templates
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/godot-downloads
+          key: godot-${{ env.GODOT_VERSION }}-linux-x86_64-v1
+
+      - name: Install Godot ${{ env.GODOT_VERSION }} & Export Templates
+        run: |
+          set -euo pipefail
+          DL_DIR="/tmp/godot-downloads"
+          BIN_ZIP="${DL_DIR}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          TPL_TPZ="${DL_DIR}/Godot_v${GODOT_VERSION}_export_templates.tpz"
+          mkdir -p "${DL_DIR}" "$HOME/.local/bin" "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_DIR}"
+
+          download_with_fallback() {
+            local filename="$1"
+            local dest="$2"
+            if [ -s "$dest" ]; then
+              echo "Using cached ${dest}"
+              return 0
+            fi
+            local urls=(
+              "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}/${filename}"
+              "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/${filename}"
+            )
+            for u in "${urls[@]}"; do
+              echo "Downloading ${u}..."
+              if curl -fSL --retry 3 --retry-delay 2 -o "$dest" "$u"; then
+                return 0
+              fi
+            done
+            echo "ERROR: Could not download ${filename} for Godot ${GODOT_VERSION}" >&2
+            return 1
+          }
+
+          download_with_fallback "Godot_v${GODOT_VERSION}_linux.x86_64.zip" "${BIN_ZIP}"
+          download_with_fallback "Godot_v${GODOT_VERSION}_export_templates.tpz" "${TPL_TPZ}"
+
+          unzip -oq "${BIN_ZIP}" -d "${DL_DIR}/bin"
+          GODOT_BIN="$(find "${DL_DIR}/bin" -maxdepth 2 -type f -name 'Godot_v*' | head -n 1)"
+          chmod +x "${GODOT_BIN}"
+          ln -sf "${GODOT_BIN}" "$HOME/.local/bin/godot"
+
+          unzip -oq "${TPL_TPZ}" -d "${DL_DIR}/tpl"
+          if [ -d "${DL_DIR}/tpl/templates" ]; then
+            cp -rf "${DL_DIR}/tpl/templates/." "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_DIR}/"
+          else
+            cp -rf "${DL_DIR}/tpl/." "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_DIR}/"
+          fi
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/godot" --version
+
+      - name: Import Godot project resources
+        run: |
+          godot --headless --import --path "${{ github.workspace }}" || true
+
+      - name: Export Web preset (build/web/index.html)
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ github.workspace }}/build/web"
+          godot --headless --path "${{ github.workspace }}" --export-release "Web" "build/web/index.html"
+          ls -lh "${{ github.workspace }}/build/web"
+          test -f "${{ github.workspace }}/build/web/index.html"
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

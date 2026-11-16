@@ -1,0 +1,12 @@
+.git
+.github
+.godot
+build
+tools/cloudflared.exe
+*.log
+*.tmp
+*Kennwort*
+*password*
+*.pem
+*.key
+.env

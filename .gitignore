@@ -1,0 +1,11 @@
+# Godot 4+ specific ignores
+.godot/
+build/
+tools/cloudflared.exe
+*.tmp
+*.log
+*Kennwort*
+*password*
+*.pem
+*.key
+.env

@@ -1,0 +1,31 @@
+# ==============================================================================
+# Oracle Cloud Reverse Proxy (Caddyfile) for High Seas Pixel Privateer
+# Terminates HTTPS / WSS (TLS via Let's Encrypt) on port 443 and proxies
+# WebSocket traffic to the Godot 4 Headless Server on 127.0.0.1:8080.
+# ==============================================================================
+
+{$GAME_DOMAIN:localhost} {
+	encode zstd gzip
+
+	# WebSocket endpoint (wss://<domain>/ or wss://<domain>/ws)
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	reverse_proxy @websocket 127.0.0.1:8080
+
+	handle_path /ws* {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# Serve exported HTML5 Web-Client (or status landing page) from /var/www/pirate_game_web
+	root * /var/www/pirate_game_web
+	try_files {path} /index.html
+	file_server
+
+	header {
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "require-corp"
+		X-Content-Type-Options "nosniff"
+	}
+}
