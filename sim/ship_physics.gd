@@ -247,7 +247,7 @@ func step_physics(delta: float, steer_input: float, world_map: WorldMap) -> void
 	var speed_ratio: float = clampf(speed / maxf(1.0, stats.max_speed), 0.0, 1.2)
 	var speed_turn_factor: float = clampf(0.62 + 0.38 * speed_ratio, 0.62, 1.08)
 	var target_ang_vel: float = clamped_steer * stats.turn_speed * sail_turn_mult * speed_turn_factor * chain_mult
-	angular_velocity = lerpf(angular_velocity, target_ang_vel, clampf(stats.rudder_inertia * delta, 0.0, 1.0))
+	angular_velocity = lerpf(angular_velocity, target_ang_vel, 1.0 - exp(-stats.rudder_inertia * delta))
 	heading = wrapf(heading + angular_velocity * delta, -PI, PI)
 
 	# Forward acceleration and keel grip

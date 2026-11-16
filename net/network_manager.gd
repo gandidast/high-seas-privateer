@@ -12,7 +12,7 @@ signal peer_ship_joined(peer_id: int, captain_name: String)
 signal peer_ship_left(peer_id: int)
 signal connection_status_changed(status_text: String)
 
-const SYNC_INTERVAL: float = 0.066 # 15 Hz server snapshot broadcast (pairs cleanly with 30Hz physics)
+const SYNC_INTERVAL: float = 0.058 # Fires cleanly every 2 ticks on 30Hz physics (steady 15 Hz, zero 66/100ms skip)
 const KEYFRAME_INTERVAL: float = 3.0 # Safety full-state keyframe interval
 const INPUT_INTERVAL: float = 0.05
 
@@ -34,6 +34,7 @@ var _peer: WebSocketMultiplayerPeer = null
 var _host_runner: LocalHostRunner = LocalHostRunner.new()
 var _sync_accum: float = 0.0
 var _keyframe_accum: float = 0.0
+var _server_time: float = 0.0
 var _force_full_snapshot: bool = true
 var _input_accum: float = 0.0
 var _last_sent_steer: float = 0.0
@@ -158,6 +159,7 @@ func bind_simulation(p_world_map: Node, p_combat_system: CombatSystem, p_loot_sy
 func start_solo() -> void:
 	shutdown()
 	Engine.physics_ticks_per_second = 60
+	Engine.max_fps = 0
 	current_mode = Mode.SOLO
 	local_peer_id = 1
 	var bus := _bus()
@@ -168,6 +170,7 @@ func start_solo() -> void:
 func start_server(p_port: int = -1, p_seed: int = Contracts.DEFAULT_WORLD_SEED) -> int:
 	shutdown()
 	Engine.physics_ticks_per_second = 30
+	Engine.max_fps = 60
 	listen_port = get_cli_port(Contracts.SERVER_DEFAULT_PORT) if p_port <= 0 else p_port
 	world_seed = p_seed
 	_peer = WebSocketMultiplayerPeer.new()
@@ -218,6 +221,7 @@ func close_peer_only() -> void:
 func start_client(url: String, captain_name: String = "Käpt'n") -> int:
 	close_peer_only()
 	Engine.physics_ticks_per_second = 60
+	Engine.max_fps = 0
 	local_captain_name = captain_name.strip_edges()
 	if local_captain_name.is_empty():
 		local_captain_name = "Freibeuter"
@@ -245,8 +249,9 @@ func shutdown() -> void:
 	_reset_snapshot_caches()
 
 
-func step_network(delta: float, local_steer: float = 0.0, local_sail_state: int = Contracts.SailState.ANCHORED) -> void:
+func step_network(delta: float, local_steer: float = 0.0, local_sail_state: int = Contracts.SailState.ANCHORED, input_seq: int = 0) -> void:
 	if current_mode == Mode.SERVER:
+		_server_time += delta
 		_sync_accum += delta
 		_keyframe_accum += delta
 		if _sync_accum >= SYNC_INTERVAL:
@@ -262,15 +267,15 @@ func step_network(delta: float, local_steer: float = 0.0, local_sail_state: int 
 				_input_accum = 0.0
 				_last_sent_steer = local_steer
 				_last_sent_sail = local_sail_state
-				rpc_id(1, "rpc_send_input", local_steer, local_sail_state)
+				rpc_id(1, "rpc_send_input", local_steer, local_sail_state, input_seq)
 
 
-func send_input_immediately(local_steer: float, local_sail_state: int) -> void:
+func send_input_immediately(local_steer: float, local_sail_state: int, input_seq: int = 0) -> void:
 	if _can_send_client_rpc():
 		_input_accum = 0.0
 		_last_sent_steer = local_steer
 		_last_sent_sail = local_sail_state
-		rpc_id(1, "rpc_send_input", local_steer, local_sail_state)
+		rpc_id(1, "rpc_send_input", local_steer, local_sail_state, input_seq)
 
 
 func send_fire_request(is_starboard: bool) -> void:
@@ -300,6 +305,7 @@ func _can_send_client_rpc() -> bool:
 func _reset_snapshot_caches() -> void:
 	_sync_accum = 0.0
 	_keyframe_accum = 0.0
+	_server_time = 0.0
 	_force_full_snapshot = true
 	_last_sent_ships.clear()
 	_last_sent_drops_rev = -1
@@ -394,12 +400,15 @@ func _broadcast_world_snapshot() -> void:
 
 	var ships_arr: Array = []
 	var seen_ship_ids: Dictionary = {}
+	var acks: Dictionary = {}
 	for s in all_ships_ref.values():
 		if s != null and s.has_method("to_sync_dict"):
 			var sid: int = int(s.get("ship_id"))
 			if not seen_ship_ids.has(sid):
 				seen_ship_ids[sid] = true
 				ships_arr.append(_pack_ship_snapshot(s, sid, send_full))
+				if s.has_meta("last_input_seq"):
+					acks[sid] = int(s.get_meta("last_input_seq"))
 	if ai_director_ref != null:
 		for ai_s in ai_director_ref.ai_ships.values():
 			if ai_s != null and ai_s.has_method("to_sync_dict"):
@@ -412,7 +421,9 @@ func _broadcast_world_snapshot() -> void:
 		if not seen_ship_ids.has(old_sid):
 			_last_sent_ships.erase(old_sid)
 
-	var snapshot: Dictionary = { "ships": ships_arr }
+	var snapshot: Dictionary = { "t": snappedf(_server_time, 0.001), "ships": ships_arr }
+	if not acks.is_empty():
+		snapshot["acks"] = acks
 
 	if loot_system_ref != null:
 		var l_rev: int = loot_system_ref.get_sync_revision()
@@ -542,12 +553,14 @@ func rpc_welcome_client(assigned_ship_id: int, server_seed: int) -> void:
 
 
 @rpc("any_peer", "unreliable_ordered")
-func rpc_send_input(steer_input: float, sail_state: int) -> void:
+func rpc_send_input(steer_input: float, sail_state: int, input_seq: int = 0) -> void:
 	if current_mode != Mode.SERVER:
 		return
 	var ship: Node = all_ships_ref.get(multiplayer.get_remote_sender_id(), null)
 	if ship == null:
 		return
+	if input_seq > int(ship.get_meta("last_input_seq", 0)):
+		ship.set_meta("last_input_seq", input_seq)
 	ship.set_meta("net_steer", clampf(steer_input, -1.0, 1.0))
 	if ship.has_method("set_sail_state"):
 		ship.call("set_sail_state", clampi(sail_state, Contracts.SailState.ANCHORED, Contracts.SailState.FULL_SAIL))

@@ -373,11 +373,13 @@ func _physics_process(delta: float) -> void:
 			hud_overlay.set_ships_dict(merged_ships)
 	else:
 		_client_sync.flush_pending_snapshot()
-		network_manager.step_network(delta, steer_input, _client_sync.client_desired_sail_state)
+		var seq: int = _client_sync.next_input_seq()
 		if player_ship != null and not bool(player_ship.get("is_sunk")):
 			if int(player_ship.get("sail_state")) != _client_sync.client_desired_sail_state:
 				player_ship.call("set_sail_state", _client_sync.client_desired_sail_state)
 			player_ship.call("step_physics", delta, steer_input, world_map)
+			_client_sync.record_prediction(seq, player_ship.get("world_pos"), float(player_ship.get("heading")))
+		network_manager.step_network(delta, steer_input, _client_sync.client_desired_sail_state, seq)
 		_client_sync.step_remote_extrapolation(delta)
 		if combat_system != null:
 			combat_system.step_reloads(delta)
@@ -437,7 +439,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			var next_sail: int = clampi(_client_sync.client_desired_sail_state + delta_sail, Contracts.SailState.ANCHORED, Contracts.SailState.FULL_SAIL)
 			_client_sync.client_desired_sail_state = next_sail
 			player_ship.call("set_sail_state", next_sail)
-			network_manager.send_input_immediately(_get_current_steer_input(), next_sail)
+			var seq: int = _client_sync.next_input_seq()
+			_client_sync.record_prediction(seq, player_ship.get("world_pos"), float(player_ship.get("heading")))
+			network_manager.send_input_immediately(_get_current_steer_input(), next_sail, seq)
 		else:
 			player_ship.call("change_sail_state", delta_sail)
 	elif event.is_action_pressed("fire_port"):
@@ -463,6 +467,8 @@ func _get_current_steer_input() -> float:
 
 func _trigger_player_broadside(is_starboard: bool) -> void:
 	if network_manager.current_mode == NetworkManager.Mode.CLIENT:
+		if combat_system != null and float(combat_system.get_broadside_cone(player_ship_id, is_starboard).get("ready_ratio", 0.0)) >= 0.99:
+			_client_sync.trigger_local_fire_anticipation(player_ship_id, is_starboard)
 		network_manager.send_fire_request(is_starboard)
 	elif combat_system != null:
 		combat_system.fire_broadside(player_ship_id, is_starboard)

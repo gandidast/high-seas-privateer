@@ -78,23 +78,12 @@ vec2 eval_depth_pair(vec2 world_pos) {
 float bayer4(vec2 p) {
 	int x = int(mod(p.x, 4.0));
 	int y = int(mod(p.y, 4.0));
-	int idx = x + y * 4;
-	if (idx == 0) return 0.0 / 16.0;
-	if (idx == 1) return 8.0 / 16.0;
-	if (idx == 2) return 2.0 / 16.0;
-	if (idx == 3) return 10.0 / 16.0;
-	if (idx == 4) return 12.0 / 16.0;
-	if (idx == 5) return 4.0 / 16.0;
-	if (idx == 6) return 14.0 / 16.0;
-	if (idx == 7) return 6.0 / 16.0;
-	if (idx == 8) return 3.0 / 16.0;
-	if (idx == 9) return 11.0 / 16.0;
-	if (idx == 10) return 1.0 / 16.0;
-	if (idx == 11) return 9.0 / 16.0;
-	if (idx == 12) return 15.0 / 16.0;
-	if (idx == 13) return 7.0 / 16.0;
-	if (idx == 14) return 13.0 / 16.0;
-	return 5.0 / 16.0;
+	vec4 row = (y == 0) ? vec4(0.0, 8.0, 2.0, 10.0) :
+	           (y == 1) ? vec4(12.0, 4.0, 14.0, 6.0) :
+	           (y == 2) ? vec4(3.0, 11.0, 1.0, 9.0) :
+	                      vec4(15.0, 7.0, 13.0, 5.0);
+	float v = (x == 0) ? row.x : (x == 1) ? row.y : (x == 2) ? row.z : row.w;
+	return v * 0.0625;
 }
 
 // Procedural 2D pixel-art palm tree clusters inside lush island interior

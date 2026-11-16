@@ -5,6 +5,8 @@ extends RefCounted
 ## stationary-culled 60Hz remote extrapolation, and ShipStackRenderer sync.
 
 const SHIP_RENDERER_PATH: String = "res://visual/ship_stack_renderer.gd"
+const INTERP_BUFFER_SEC: float = 0.075
+const MAX_REMOTE_EXTRAP_SEC: float = 0.16
 
 var all_ships_ref: Dictionary = {}
 var ship_renderers_ref: Dictionary = {}
@@ -27,6 +29,13 @@ var _ship_renderer_script: Script = null
 var _is_headless: bool = false
 
 var _remote_extrap_age: Dictionary = {} # ship_id (int) -> float
+var _remote_interp: Dictionary = {} # ship_id (int) -> { t0, p0, h0, v0, w0, t1, p1, h1, v1, w1, spd1, sail1 }
+var _interp_clock: float = 0.0
+var _latest_srv_time: float = 0.0
+var _has_srv_time: bool = false
+var _pred_history: Dictionary = {} # seq (int) -> { "pos": Vector2, "hdg": float }
+var _input_seq: int = 0
+var _local_fire_anticipation_msec: Dictionary = {} # bool -> int
 var _pending_snapshot: Dictionary = {}
 var _has_pending_snapshot: bool = false
 
@@ -98,6 +107,13 @@ func reset() -> void:
 	has_initial_player_snapshot = false
 	client_desired_sail_state = Contracts.SailState.ANCHORED
 	_remote_extrap_age.clear()
+	_remote_interp.clear()
+	_interp_clock = 0.0
+	_latest_srv_time = 0.0
+	_has_srv_time = false
+	_pred_history.clear()
+	_input_seq = 0
+	_local_fire_anticipation_msec.clear()
 	_pending_snapshot.clear()
 	_has_pending_snapshot = false
 	_last_wind_dir = Vector2(999.0, 999.0)
@@ -107,6 +123,31 @@ func reset() -> void:
 	_last_wanted_level = -1
 	_last_monster_state.clear()
 	_last_ship_visuals.clear()
+
+
+func next_input_seq() -> int:
+	_input_seq += 1
+	return _input_seq
+
+
+func record_prediction(seq: int, pos: Vector2, hdg: float) -> void:
+	_pred_history[seq] = { "pos": pos, "hdg": hdg }
+	if _pred_history.size() > 110:
+		var cutoff: int = seq - 90
+		for old_k in _pred_history.keys():
+			if int(old_k) < cutoff:
+				_pred_history.erase(old_k)
+
+
+func trigger_local_fire_anticipation(sid: int, is_starboard: bool) -> void:
+	_local_fire_anticipation_msec[is_starboard] = Time.get_ticks_msec()
+	var r: Node2D = ship_renderers_ref.get(sid, null)
+	if r != null and is_instance_valid(r):
+		r.call("trigger_muzzle_flash", is_starboard)
+	if pixel_camera_ref != null:
+		pixel_camera_ref.call("add_trauma", 0.22)
+	if combat_system_ref != null:
+		combat_system_ref.trigger_client_reload_visual(sid, is_starboard)
 
 
 func ensure_ship_renderer(sid: int, faction: int, ship_name: String, pos: Vector2, heading: float) -> void:
@@ -131,7 +172,7 @@ func queue_snapshot(snapshot: Dictionary) -> void:
 		_has_pending_snapshot = true
 		return
 
-	for key in ["wind_x", "wind_y", "wind_strength", "weather_state", "weather_intensity", "wanted_level", "forts", "sea_monster", "drops"]:
+	for key in ["t", "acks", "wind_x", "wind_y", "wind_strength", "weather_state", "weather_intensity", "wanted_level", "forts", "sea_monster", "drops"]:
 		if snapshot.has(key):
 			_pending_snapshot[key] = snapshot[key]
 
@@ -178,6 +219,21 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 	if loot_system_ref != null and snapshot.has("drops"):
 		loot_system_ref.apply_sync_array(snapshot["drops"])
 
+	if snapshot.has("t"):
+		var srv_t: float = float(snapshot["t"])
+		_latest_srv_time = maxf(_latest_srv_time, srv_t)
+		var desired_clk: float = _latest_srv_time - INTERP_BUFFER_SEC
+		if not _has_srv_time or absf(desired_clk - _interp_clock) > 0.25:
+			_interp_clock = desired_clk
+		_has_srv_time = true
+	else:
+		_latest_srv_time += 0.066
+		if not _has_srv_time:
+			_interp_clock = _latest_srv_time - INTERP_BUFFER_SEC
+			_has_srv_time = true
+
+	var acks_dict: Dictionary = snapshot.get("acks", {})
+	var player_ack: int = int(acks_dict.get(player_ship_id, 0))
 	var raw_ships: Array = snapshot.get("ships", [])
 	var seen_ids: Dictionary = {}
 
@@ -206,9 +262,9 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 
 		var rend: Node2D = ship_renderers_ref.get(sid, null)
 		if sid == player_ship_id:
-			_reconcile_local_player(ship, rend, sd, is_new_ship)
+			_reconcile_local_player(ship, rend, sd, is_new_ship, player_ack)
 		elif sd.size() > 1:
-			_sync_remote_ship(ship, rend, sd, is_new_ship)
+			_sync_remote_ship(sid, ship, rend, sd, is_new_ship, _latest_srv_time)
 
 		if sd.has("hull_tier") and rend != null and is_instance_valid(rend) and rend.has_method("set_hull_tier"):
 			rend.call("set_hull_tier", int(sd["hull_tier"]))
@@ -222,6 +278,7 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 			to_remove.append(eid)
 	for eid in to_remove:
 		_remote_extrap_age.erase(eid)
+		_remote_interp.erase(eid)
 		_last_ship_visuals.erase(eid)
 		var old_ship: Node = all_ships_ref.get(eid, null)
 		all_ships_ref.erase(eid)
@@ -231,6 +288,13 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 
 
 func step_remote_extrapolation(delta: float) -> void:
+	if _has_srv_time:
+		_interp_clock += delta
+		var target_clk: float = _latest_srv_time - INTERP_BUFFER_SEC
+		var clk_err: float = target_clk - _interp_clock
+		if absf(clk_err) > 0.015:
+			_interp_clock += clk_err * minf(1.0, delta * 4.0)
+
 	var bus := _bus()
 	for sid_var in all_ships_ref.keys():
 		var sid: int = int(sid_var)
@@ -239,6 +303,34 @@ func step_remote_extrapolation(delta: float) -> void:
 		var r_ship: Node = all_ships_ref[sid_var]
 		if r_ship == null or not is_instance_valid(r_ship) or bool(r_ship.get("is_sunk")):
 			continue
+
+		var buf_var: Variant = _remote_interp.get(sid, null)
+		if buf_var is Dictionary:
+			var buf: Dictionary = buf_var
+			var t0: float = float(buf["t0"])
+			var t1: float = float(buf["t1"])
+			var p0: Vector2 = buf["p0"]
+			var p1: Vector2 = buf["p1"]
+			var h0: float = float(buf["h0"])
+			var h1: float = float(buf["h1"])
+			var v1: Vector2 = buf["v1"]
+			var w1: float = float(buf["w1"])
+			var next_pos: Vector2 = p1
+			var next_hdg: float = h1
+			if _interp_clock <= t1 and t1 > t0 + 0.001:
+				var alpha: float = clampf((_interp_clock - t0) / (t1 - t0), 0.0, 1.0)
+				next_pos = p0.lerp(p1, alpha)
+				next_hdg = lerp_angle(h0, h1, alpha)
+			else:
+				var extra: float = clampf(_interp_clock - t1, 0.0, MAX_REMOTE_EXTRAP_SEC)
+				next_pos = p1 + v1.rotated(w1 * extra * 0.5) * extra
+				next_hdg = wrapf(h1 + w1 * extra, -PI, PI)
+			r_ship.set("world_pos", next_pos)
+			r_ship.set("heading", next_hdg)
+			if bus != null and _ship_visual_changed(sid, r_ship):
+				_emit_ship_state(bus, sid, r_ship)
+			continue
+
 		var age: float = float(_remote_extrap_age.get(sid, 0.0)) + delta
 		_remote_extrap_age[sid] = age
 		if age > 0.25:
@@ -247,10 +339,8 @@ func step_remote_extrapolation(delta: float) -> void:
 		var r_ang_vel: float = float(r_ship.get("angular_velocity"))
 		if r_vel.length_squared() < 0.01 and absf(r_ang_vel) < 0.001:
 			continue
-
-		var decay_w: float = 1.0 if age < 0.12 else clampf(1.0 - (age - 0.12) / 0.13, 0.0, 1.0)
-		var r_pos: Vector2 = (r_ship.get("world_pos") as Vector2) + r_vel * (delta * decay_w)
-		var r_hdg: float = wrapf(float(r_ship.get("heading")) + r_ang_vel * (delta * decay_w), -PI, PI)
+		var r_pos: Vector2 = (r_ship.get("world_pos") as Vector2) + r_vel.rotated(r_ang_vel * delta * 0.5) * delta
+		var r_hdg: float = wrapf(float(r_ship.get("heading")) + r_ang_vel * delta, -PI, PI)
 		r_ship.set("world_pos", r_pos)
 		r_ship.set("heading", r_hdg)
 		if bus != null and _ship_visual_changed(sid, r_ship):
@@ -313,7 +403,7 @@ func _apply_sea_monster_diff(snapshot: Dictionary, bus: Contracts) -> void:
 		bus.sea_monster_updated.emit(mid, mpos, mhp, mmax, mphase)
 
 
-func _reconcile_local_player(ship: Node, rend: Node2D, sd: Dictionary, is_new_ship: bool) -> void:
+func _reconcile_local_player(ship: Node, rend: Node2D, sd: Dictionary, is_new_ship: bool, ack_seq: int = 0) -> void:
 	if sd.size() > 1:
 		var pre_pos: Vector2 = ship.get("world_pos")
 		var pre_hdg: float = float(ship.get("heading"))
@@ -324,8 +414,9 @@ func _reconcile_local_player(ship: Node, rend: Node2D, sd: Dictionary, is_new_sh
 		var srv_vel := Vector2(float(sd.get("vx", 0.0)), float(sd.get("vy", 0.0)))
 		var srv_speed: float = float(sd.get("speed", srv_vel.length()))
 
-		if not has_initial_player_snapshot or is_new_ship or srv_is_sunk or was_sunk or pre_pos.distance_to(srv_pos) > 85.0:
+		if not has_initial_player_snapshot or is_new_ship or srv_is_sunk or was_sunk or pre_pos.distance_to(srv_pos) > 110.0:
 			ship.call("apply_sync_dict", sd)
+			_pred_history.clear()
 			if rend != null and is_instance_valid(rend) and rend.has_method("clear_visual_offset"):
 				rend.call("clear_visual_offset")
 			if not has_initial_player_snapshot and pixel_camera_ref != null:
@@ -335,24 +426,32 @@ func _reconcile_local_player(ship: Node, rend: Node2D, sd: Dictionary, is_new_sh
 				client_desired_sail_state = Contracts.SailState.ANCHORED
 		else:
 			_apply_authoritative_non_kinematic(ship, sd)
-			var err_vec: Vector2 = srv_pos - pre_pos
-			var err_len: float = err_vec.length()
 			var both_idle: bool = (client_desired_sail_state == Contracts.SailState.ANCHORED and srv_speed < 4.0 and float(ship.get("speed")) < 4.0)
-			if both_idle and err_len > 1.0:
-				var next_p: Vector2 = pre_pos.lerp(srv_pos, 0.25)
-				ship.set("world_pos", next_p)
-				ship.set("velocity", (ship.get("velocity") as Vector2).lerp(srv_vel, 0.25))
-				if rend != null and is_instance_valid(rend) and rend.has_method("add_visual_offset"):
-					rend.call("add_visual_offset", pre_pos - next_p, 0.0)
-			elif not both_idle and err_len > 18.0:
-				var corr: Vector2 = err_vec.normalized() * ((err_len - 18.0) * 0.35)
+			var ref_pos: Vector2 = pre_pos
+			var ref_hdg: float = pre_hdg
+			var has_ack: bool = ack_seq > 0 and _pred_history.has(ack_seq)
+			if has_ack:
+				var pred: Dictionary = _pred_history[ack_seq]
+				ref_pos = pred["pos"]
+				ref_hdg = float(pred["hdg"])
+				for k in _pred_history.keys():
+					if int(k) <= ack_seq:
+						_pred_history.erase(k)
+
+			var err_vec: Vector2 = srv_pos - ref_pos
+			var err_len: float = err_vec.length()
+			var deadband: float = 4.0 if both_idle else (10.0 if has_ack else 26.0)
+			if err_len > deadband:
+				var corr_gain: float = 0.25 if has_ack else 0.22
+				var corr: Vector2 = err_vec.normalized() * ((err_len - deadband) * corr_gain)
 				ship.set("world_pos", pre_pos + corr)
 				if rend != null and is_instance_valid(rend) and rend.has_method("add_visual_offset"):
 					rend.call("add_visual_offset", -corr, 0.0)
 
-			var hdg_diff: float = wrapf(srv_hdg - pre_hdg, -PI, PI)
-			if absf(hdg_diff) > 0.16:
-				var hdg_corr: float = hdg_diff * 0.25
+			var hdg_diff: float = wrapf(srv_hdg - ref_hdg, -PI, PI)
+			var hdg_deadband: float = 0.14 if has_ack else 0.24
+			if absf(hdg_diff) > hdg_deadband:
+				var hdg_corr: float = hdg_diff * 0.22
 				ship.set("heading", wrapf(pre_hdg + hdg_corr, -PI, PI))
 				if rend != null and is_instance_valid(rend) and rend.has_method("add_visual_offset"):
 					rend.call("add_visual_offset", Vector2.ZERO, -hdg_corr)
@@ -365,19 +464,39 @@ func _reconcile_local_player(ship: Node, rend: Node2D, sd: Dictionary, is_new_sh
 		hud_overlay_ref.player_ship = ship
 
 
-func _sync_remote_ship(ship: Node, rend: Node2D, sd: Dictionary, is_new_ship: bool) -> void:
+func _sync_remote_ship(sid: int, ship: Node, rend: Node2D, sd: Dictionary, is_new_ship: bool, srv_time: float) -> void:
 	var pre_pos: Vector2 = ship.get("world_pos")
 	var pre_hdg: float = float(ship.get("heading"))
 	ship.call("apply_sync_dict", sd)
 	var next_pos: Vector2 = ship.get("world_pos")
 	var next_hdg: float = float(ship.get("heading"))
-	if not is_new_ship and pre_pos.distance_to(next_pos) < 95.0:
-		var pos_d: Vector2 = pre_pos - next_pos
-		var hdg_d: float = wrapf(pre_hdg - next_hdg, -PI, PI)
-		if (pos_d.length_squared() > 0.0001 or absf(hdg_d) > 0.0005) and rend != null and is_instance_valid(rend) and rend.has_method("add_visual_offset"):
-			rend.call("add_visual_offset", pos_d, hdg_d)
-	elif rend != null and is_instance_valid(rend) and rend.has_method("clear_visual_offset"):
-		rend.call("clear_visual_offset")
+	var next_vel: Vector2 = ship.get("velocity")
+	var next_ang: float = float(ship.get("angular_velocity"))
+
+	if is_new_ship or pre_pos.distance_to(next_pos) > 110.0 or not _remote_interp.has(sid):
+		_remote_interp[sid] = {
+			"t0": srv_time, "p0": next_pos, "h0": next_hdg,
+			"t1": srv_time, "p1": next_pos, "h1": next_hdg,
+			"v1": next_vel, "w1": next_ang
+		}
+		if rend != null and is_instance_valid(rend) and rend.has_method("clear_visual_offset"):
+			rend.call("clear_visual_offset")
+		return
+
+	var prev_buf: Dictionary = _remote_interp[sid]
+	_remote_interp[sid] = {
+		"t0": maxf(float(prev_buf["t1"]), _interp_clock),
+		"p0": pre_pos,
+		"h0": pre_hdg,
+		"t1": maxf(srv_time, _interp_clock + 0.02),
+		"p1": next_pos,
+		"h1": next_hdg,
+		"v1": next_vel,
+		"w1": next_ang
+	}
+	# Restore smoothed pre_pos so interpolation glides cleanly without 1-frame snap
+	ship.set("world_pos", pre_pos)
+	ship.set("heading", pre_hdg)
 
 
 func _apply_authoritative_non_kinematic(ship: Node, sd: Dictionary) -> void:
@@ -416,6 +535,9 @@ func _emit_ship_state(bus: Contracts, sid: int, ship: Node) -> void:
 	var hp: float = float(ship.get("hp"))
 	var mhp: float = float(ship.get("max_hp"))
 	_last_ship_visuals[sid] = { "pos": pos, "hdg": hdg, "spd": spd, "sail": sail, "hp": hp, "mhp": mhp }
+	var r: Node2D = ship_renderers_ref.get(sid, null)
+	if r != null and is_instance_valid(r) and r.has_method("set_kinematic_velocity"):
+		r.call("set_kinematic_velocity", ship.get("velocity"), float(ship.get("angular_velocity")))
 	bus.ship_state_updated.emit(sid, pos, hdg, spd, sail, hp, mhp)
 
 
@@ -440,7 +562,10 @@ func _on_ship_despawned(sid: int) -> void:
 func _on_ship_state_updated(sid: int, world_pos: Vector2, heading: float, speed: float, sail_state: int, hp: float, max_hp: float) -> void:
 	var r: Node2D = ship_renderers_ref.get(sid, null)
 	if r != null and is_instance_valid(r):
-		r.call("update_transform_state", world_pos, heading, speed, sail_state, hp, max_hp)
+		var ship: Node = all_ships_ref.get(sid, null)
+		var vel: Vector2 = ship.get("velocity") if ship != null else Vector2.ZERO
+		var ang_vel: float = float(ship.get("angular_velocity")) if ship != null else 0.0
+		r.call("update_transform_state", world_pos, heading, speed, sail_state, hp, max_hp, vel, ang_vel)
 
 
 func _on_ship_stats_compiled(sid: int, stats: Contracts.ShipStats) -> void:
@@ -471,6 +596,12 @@ func _on_ship_repaired(sid: int, new_hp: float, _max_hp: float, _cost: int) -> v
 
 
 func _on_broadside_fired(sid: int, is_starboard: bool, _origin: Vector2, _dir: Vector2, _cannons: Array) -> void:
+	if sid == player_ship_id and network_manager_ref != null and network_manager_ref.current_mode == NetworkManager.Mode.CLIENT:
+		if _local_fire_anticipation_msec.has(is_starboard):
+			var elapsed: int = Time.get_ticks_msec() - int(_local_fire_anticipation_msec[is_starboard])
+			_local_fire_anticipation_msec.erase(is_starboard)
+			if elapsed < 400:
+				return
 	var r: Node2D = ship_renderers_ref.get(sid, null)
 	if r != null and is_instance_valid(r):
 		r.call("trigger_muzzle_flash", is_starboard)

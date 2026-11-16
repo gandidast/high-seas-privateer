@@ -23,10 +23,14 @@ var hull_tier: int = Contracts.ShipClass.SLOOP
 
 var _world_pos: Vector2 = Vector2.ZERO
 var _heading: float = 0.0
+var _velocity: Vector2 = Vector2.ZERO
+var _angular_velocity: float = 0.0
+var _subframe_accum: float = 0.0
 var _prev_heading: float = 0.0
 var _visual_pos_offset: Vector2 = Vector2.ZERO
 var _visual_hdg_offset: float = 0.0
 var _speed: float = 0.0
+var _idle_redraw_accum: float = 0.0
 var _sail_state: int = Contracts.SailState.ANCHORED
 var _hp: float = 100.0
 var _max_hp: float = 100.0
@@ -166,9 +170,21 @@ func _rebuild_layer_stack() -> void:
 	_last_applied_flash = false
 
 
-func update_transform_state(world_pos: Vector2, heading: float, speed: float, sail_state: int, hp: float = 100.0, max_hp: float = 100.0) -> void:
+func update_transform_state(
+	world_pos: Vector2,
+	heading: float,
+	speed: float,
+	sail_state: int,
+	hp: float = 100.0,
+	max_hp: float = 100.0,
+	p_velocity: Vector2 = Vector2.ZERO,
+	p_angular_velocity: float = 0.0
+) -> void:
 	_ensure_nodes()
 	_world_pos = world_pos
+	_velocity = p_velocity
+	_angular_velocity = p_angular_velocity
+	_subframe_accum = 0.0
 	position = (_world_pos + _visual_pos_offset).round()
 	_prev_heading = _heading
 	_heading = heading
@@ -177,6 +193,11 @@ func update_transform_state(world_pos: Vector2, heading: float, speed: float, sa
 	_hp = hp
 	_max_hp = maxf(1.0, max_hp)
 	_update_nameplate()
+
+
+func set_kinematic_velocity(p_velocity: Vector2, p_angular_velocity: float) -> void:
+	_velocity = p_velocity
+	_angular_velocity = p_angular_velocity
 
 
 func add_visual_offset(pos_delta: Vector2, hdg_delta: float) -> void:
@@ -190,11 +211,11 @@ func clear_visual_offset() -> void:
 
 
 func get_smooth_world_pos() -> Vector2:
-	return _world_pos + _visual_pos_offset
+	return _world_pos + _velocity * minf(_subframe_accum, 0.022) + _visual_pos_offset
 
 
 func _render_heading() -> float:
-	return wrapf(_heading + _visual_hdg_offset, -PI, PI)
+	return wrapf(_heading + _angular_velocity * minf(_subframe_accum, 0.022) + _visual_hdg_offset, -PI, PI)
 
 
 func update_equipped_modules(equipped_items: Array) -> void:
@@ -337,6 +358,7 @@ func _is_within_camera_bounds(margin: float) -> bool:
 
 func _process(delta: float) -> void:
 	_time_accum += delta
+	_subframe_accum = minf(_subframe_accum + delta, 0.022)
 	if _hit_flash_timer > 0.0:
 		_hit_flash_timer = maxf(0.0, _hit_flash_timer - delta)
 
@@ -349,7 +371,7 @@ func _process(delta: float) -> void:
 		if absf(_visual_hdg_offset) <= 0.002:
 			_visual_hdg_offset = 0.0
 
-	position = (_world_pos + _visual_pos_offset).round()
+	position = get_smooth_world_pos().round()
 
 	var onscreen: bool = _is_within_camera_bounds(CULL_MARGIN_PX)
 	if not onscreen:
@@ -380,7 +402,14 @@ func _process(delta: float) -> void:
 	_apply_stack_transforms(bob_y, just_entered)
 	_update_wake_and_foam(delta)
 	_update_muzzle_flashes(delta)
-	queue_redraw()
+	if _speed > 4.0 or not _muzzle_flashes.is_empty() or not _foam_dots.is_empty() or _hit_flash_timer > 0.0 or just_entered:
+		_idle_redraw_accum = 0.0
+		queue_redraw()
+	else:
+		_idle_redraw_accum += delta
+		if _idle_redraw_accum >= 0.08:
+			_idle_redraw_accum = 0.0
+			queue_redraw()
 
 
 func _apply_stack_transforms(bob_y: float, force_all: bool = false) -> void:

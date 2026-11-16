@@ -126,7 +126,6 @@ func set_ships_dict(p_ships: Dictionary) -> void:
 	all_ships_ref = p_ships
 	if _minimap != null:
 		_minimap.all_ships_ref = p_ships
-		_minimap_dirty = true
 
 
 func _notification(what: int) -> void:
