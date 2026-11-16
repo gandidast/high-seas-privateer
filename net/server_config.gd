@@ -4,7 +4,7 @@ extends RefCounted
 ## Supports 24/7 Oracle Cloud (sslip.io wss://), local localhost:8080 fallback,
 ## HTML5 URL query parameters (?server=wss://...), and persistent captain profile.
 
-const DEFAULT_SERVER_URL := "wss://DEINE-ORACLE-IP.sslip.io"
+const DEFAULT_SERVER_URL := "wss://high-seas-privateer.onrender.com"
 const LOCAL_SERVER_URL := "ws://localhost:8080"
 const PROFILE_PATH := "user://player_profile.cfg"
 

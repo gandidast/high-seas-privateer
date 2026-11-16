@@ -17,7 +17,7 @@ const SYNC_INTERVAL: float = 0.05 # 20 Hz server snapshot broadcast
 const INPUT_INTERVAL: float = 0.05
 const LOCAL_PROBE_TIMEOUT_SEC: float = 0.6
 const SERVER_BOOT_WAIT_SEC: float = 0.8
-const CLIENT_CONNECT_TIMEOUT_SEC: float = 10.0
+const CLIENT_CONNECT_TIMEOUT_SEC: float = 40.0
 const MAX_BOOT_CONNECT_RETRIES: int = 3
 
 enum Mode {
@@ -294,6 +294,8 @@ func connect_or_autostart(url: String, captain_name: String = "Käpt'n") -> void
 	else:
 		if used_placeholder_fallback:
 			connection_status_changed.emit("Platzhalter erkannt – verbinde mit %s ..." % _pending_url)
+		elif _pending_url.contains("onrender.com"):
+			connection_status_changed.emit("Verbinde mit One-World (%s – Render Free Tier wacht ggf. ~25s auf)..." % _pending_url)
 		else:
 			connection_status_changed.emit("Verbinde mit One-World (%s)..." % _pending_url)
 		_connect_timeout_timer = CLIENT_CONNECT_TIMEOUT_SEC
