@@ -17,6 +17,8 @@ var hull_tier: int = Contracts.ShipClass.SLOOP
 var _world_pos: Vector2 = Vector2.ZERO
 var _heading: float = 0.0
 var _prev_heading: float = 0.0
+var _visual_pos_offset: Vector2 = Vector2.ZERO
+var _visual_hdg_offset: float = 0.0
 var _speed: float = 0.0
 var _sail_state: int = Contracts.SailState.ANCHORED
 var _hp: float = 100.0
@@ -146,7 +148,7 @@ func _rebuild_layer_stack() -> void:
 func update_transform_state(world_pos: Vector2, heading: float, speed: float, sail_state: int, hp: float = 100.0, max_hp: float = 100.0) -> void:
 	_ensure_nodes()
 	_world_pos = world_pos
-	position = world_pos.round()
+	position = (_world_pos + _visual_pos_offset).round()
 	_prev_heading = _heading
 	_heading = heading
 	_speed = speed
@@ -154,6 +156,24 @@ func update_transform_state(world_pos: Vector2, heading: float, speed: float, sa
 	_hp = hp
 	_max_hp = maxf(1.0, max_hp)
 	_update_nameplate()
+
+
+func add_visual_offset(pos_delta: Vector2, hdg_delta: float) -> void:
+	_visual_pos_offset = (_visual_pos_offset + pos_delta).limit_length(96.0)
+	_visual_hdg_offset = clampf(wrapf(_visual_hdg_offset + hdg_delta, -PI, PI), -1.2, 1.2)
+
+
+func clear_visual_offset() -> void:
+	_visual_pos_offset = Vector2.ZERO
+	_visual_hdg_offset = 0.0
+
+
+func get_smooth_world_pos() -> Vector2:
+	return _world_pos + _visual_pos_offset
+
+
+func _render_heading() -> float:
+	return wrapf(_heading + _visual_hdg_offset, -PI, PI)
 
 
 func update_equipped_modules(equipped_items: Array) -> void:
@@ -278,8 +298,20 @@ func _process(delta: float) -> void:
 	if _hit_flash_timer > 0.0:
 		_hit_flash_timer = maxf(0.0, _hit_flash_timer - delta)
 
-	var turn_delta: float = wrapf(_heading - _prev_heading, -PI, PI)
-	_prev_heading = _heading
+	if _visual_pos_offset.length_squared() > 0.0025 or absf(_visual_hdg_offset) > 0.002:
+		var decay: float = exp(-14.0 * delta)
+		_visual_pos_offset *= decay
+		_visual_hdg_offset *= decay
+		if _visual_pos_offset.length_squared() <= 0.0025:
+			_visual_pos_offset = Vector2.ZERO
+		if absf(_visual_hdg_offset) <= 0.002:
+			_visual_hdg_offset = 0.0
+
+	position = (_world_pos + _visual_pos_offset).round()
+
+	var r_hdg: float = _render_heading()
+	var turn_delta: float = wrapf(r_hdg - _prev_heading, -PI, PI)
+	_prev_heading = r_hdg
 	var target_roll: float = clampf(turn_delta * 18.0, -1.8, 1.8) + sin(_time_accum * 2.1 + _bob_phase) * 0.65
 	_roll_amount = lerpf(_roll_amount, target_roll, minf(1.0, delta * 8.0))
 
@@ -291,7 +323,8 @@ func _process(delta: float) -> void:
 
 
 func _apply_stack_transforms(bob_y: float) -> void:
-	var perp := Vector2(-sin(_heading), cos(_heading))
+	var r_hdg: float = _render_heading()
+	var perp := Vector2(-sin(r_hdg), cos(r_hdg))
 	var sail_scale_x: float = 1.0
 	if _sail_state == Contracts.SailState.ANCHORED:
 		sail_scale_x = 0.48
@@ -306,7 +339,7 @@ func _apply_stack_transforms(bob_y: float) -> void:
 		var spr: Sprite2D = _layer_sprites[i]
 		var height_frac: float = float(i) / float(maxi(1, _layer_sprites.size() - 1))
 		var roll_shift: Vector2 = perp * (_roll_amount * height_frac * 0.85)
-		spr.rotation = _heading
+		spr.rotation = r_hdg
 		spr.position = Vector2(roll_shift.x, float(i) * LAYER_Y_STEP + bob_y + roll_shift.y).round()
 		spr.modulate = flash_tint
 		if i >= _sail_layer_range.x and i <= _sail_layer_range.y:
@@ -322,12 +355,12 @@ func _apply_stack_transforms(bob_y: float) -> void:
 		var stack_layer: float = float(entry["stack_layer"])
 		var height_frac: float = stack_layer / float(maxi(1, LAYER_COUNT - 1))
 		var roll_shift: Vector2 = perp * (_roll_amount * height_frac * 0.85)
-		var world_off: Vector2 = local_off.rotated(_heading)
+		var world_off: Vector2 = local_off.rotated(r_hdg)
 		mspr.position = Vector2(
 			world_off.x + roll_shift.x,
 			world_off.y + stack_layer * LAYER_Y_STEP + bob_y + roll_shift.y
 		).round()
-		mspr.rotation = _heading + float(entry["local_rot"])
+		mspr.rotation = r_hdg + float(entry["local_rot"])
 		mspr.modulate = flash_tint
 
 
@@ -337,8 +370,10 @@ func _hull_size_factor() -> float:
 
 func _update_wake_and_foam(delta: float) -> void:
 	var scale_f: float = _hull_size_factor()
-	var forward := Vector2(cos(_heading), sin(_heading))
-	var stern_world: Vector2 = _world_pos - forward * (21.0 * scale_f)
+	var r_hdg: float = _render_heading()
+	var r_pos: Vector2 = get_smooth_world_pos()
+	var forward := Vector2(cos(r_hdg), sin(r_hdg))
+	var stern_world: Vector2 = r_pos - forward * (21.0 * scale_f)
 
 	_wake_sample_timer += delta
 	if _wake_sample_timer >= 0.06:
@@ -360,7 +395,7 @@ func _update_wake_and_foam(delta: float) -> void:
 	if _speed > 8.0 and _foam_spawn_timer >= 0.055:
 		_foam_spawn_timer = 0.0
 		var perp := Vector2(-forward.y, forward.x)
-		var bow_world: Vector2 = _world_pos + forward * (22.0 * scale_f)
+		var bow_world: Vector2 = r_pos + forward * (22.0 * scale_f)
 		for side in [-1.0, 1.0]:
 			_foam_dots.append({
 				"world_pos": bow_world + perp * (side * 2.5 * scale_f),
@@ -399,7 +434,8 @@ func _update_muzzle_flashes(delta: float) -> void:
 
 func _draw() -> void:
 	var scale_f: float = _hull_size_factor()
-	var forward := Vector2(cos(_heading), sin(_heading))
+	var r_hdg: float = _render_heading()
+	var forward := Vector2(cos(r_hdg), sin(r_hdg))
 	var perp := Vector2(-forward.y, forward.x)
 
 	# 1. Animated Layer 0 waterline pixel foam ring
@@ -433,7 +469,7 @@ func _draw() -> void:
 	# 4. Muzzle flashes & smoke puffs on deck layer
 	for mf in _muzzle_flashes:
 		var t: float = float(mf["age"]) / float(mf["duration"])
-		var local_p: Vector2 = (mf["local_pos"] as Vector2).rotated(_heading) + Vector2(0.0, -7.0)
+		var local_p: Vector2 = (mf["local_pos"] as Vector2).rotated(r_hdg) + Vector2(0.0, -7.0)
 		var out_dir: Vector2 = perp * float(mf["side_sign"])
 		if t < 0.45:
 			var flash_pos: Vector2 = (local_p + out_dir * (t * 10.0)).round()

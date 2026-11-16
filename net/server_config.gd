@@ -1,12 +1,16 @@
 class_name ServerConfig
 extends RefCounted
 ## Central server & player profile configuration for High Seas Pixel Privateer.
-## Supports 24/7 Oracle Cloud (sslip.io wss://), local localhost:8080 fallback,
+## Supports Hugging Face Spaces (wss://*.hf.space), Oracle Cloud, local localhost fallback,
 ## HTML5 URL query parameters (?server=wss://...), and persistent captain profile.
 
-const DEFAULT_SERVER_URL := "wss://high-seas-privateer.onrender.com"
+const DEFAULT_SERVER_URL := "wss://fabsipapi-high-seas-privateer.hf.space"
 const LOCAL_SERVER_URL := "ws://localhost:8080"
 const PROFILE_PATH := "user://player_profile.cfg"
+const DEPRECATED_DEFAULT_URLS := [
+	"wss://high-seas-privateer.onrender.com",
+	"wss://DEINE-ORACLE-IP.sslip.io"
+]
 
 
 static func get_initial_server_url() -> String:
@@ -56,7 +60,10 @@ static func load_captain_name(default_name: String = "Käpt'n Rotbart") -> Strin
 static func load_saved_server_url() -> String:
 	var cfg := ConfigFile.new()
 	if cfg.load(PROFILE_PATH) == OK:
-		return str(cfg.get_value("profile", "last_server_url", "")).strip_edges()
+		var saved: String = str(cfg.get_value("profile", "last_server_url", "")).strip_edges()
+		if saved in DEPRECATED_DEFAULT_URLS:
+			return ""
+		return saved
 	return ""
 
 

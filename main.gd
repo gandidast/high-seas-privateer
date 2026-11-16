@@ -34,6 +34,8 @@ var player_grid: Node = null
 var player_ship_id: int = 1
 var _respawn_timer: float = -1.0
 var _client_desired_sail_state: int = Contracts.SailState.ANCHORED
+var _has_initial_player_snapshot: bool = false
+var _remote_extrap_age: Dictionary = {} # ship_id (int) -> float
 var _server_respawn_timers: Dictionary = {} # peer_id (int) -> float
 
 # Visuals & UI (only instantiated in non-server mode)
@@ -578,6 +580,8 @@ func _start_local_solo_game() -> void:
 func _on_network_client_joined(assigned_ship_id: int, server_seed: int) -> void:
 	_clear_game_world()
 	_client_desired_sail_state = Contracts.SailState.ANCHORED
+	_has_initial_player_snapshot = false
+	_remote_extrap_age.clear()
 	if _reconnect_btn != null:
 		_reconnect_btn.visible = false
 	if _start_screen != null:
@@ -789,8 +793,15 @@ func _physics_process(delta: float) -> void:
 		if hud_overlay != null:
 			hud_overlay.set_ships_dict(merged_ships)
 	else:
-		# Multiplayer client sends desired sail & steer input; server snapshots drive transforms
+		# Multiplayer client: 60Hz local ship prediction + remote dead-reckoning for butter-smooth movement
 		network_manager.step_network(delta, steer_input, _client_desired_sail_state)
+		if world_map != null:
+			world_map.call("step_wind", delta)
+		if player_ship != null and not bool(player_ship.get("is_sunk")):
+			if int(player_ship.get("sail_state")) != _client_desired_sail_state:
+				player_ship.call("set_sail_state", _client_desired_sail_state)
+			player_ship.call("step_physics", delta, steer_input, world_map)
+		_step_client_remote_extrapolation(delta)
 		if combat_system != null:
 			combat_system.step_reloads(delta)
 		if hud_overlay != null:
@@ -938,6 +949,7 @@ func _connect_visual_and_network_signals() -> void:
 	bus.ship_stats_compiled.connect(_on_ship_stats_compiled)
 	bus.ship_grid_updated.connect(_on_ship_grid_updated)
 	bus.ship_class_upgraded.connect(_on_ship_class_upgraded)
+	bus.ship_repaired.connect(_on_ship_repaired)
 	bus.broadside_fired.connect(_on_broadside_fired)
 	bus.ship_damaged.connect(_on_ship_damaged)
 	bus.ship_sunk.connect(_on_ship_sunk)
@@ -993,8 +1005,10 @@ func _on_snapshot_received(snapshot: Dictionary) -> void:
 		if sid < 0:
 			continue
 		seen_ids[sid] = true
+		_remote_extrap_age[sid] = 0.0
 
 		var ship: Node = all_ships.get(sid, null)
+		var is_new_ship: bool = (ship == null)
 		if ship == null:
 			var fac: int = int(sd.get("faction", Contracts.ShipFaction.PIRATE))
 			var sname: String = str(sd.get("ship_name", sd.get("name", "Schiff #%d" % sid)))
@@ -1004,19 +1018,69 @@ func _on_snapshot_received(snapshot: Dictionary) -> void:
 			all_ships[sid] = ship
 			_ensure_ship_renderer(sid, fac, sname, pos, hdg)
 
-		ship.call("apply_sync_dict", sd)
-		if sd.has("hull_tier") and ship_renderers.has(sid):
-			var rend: Node2D = ship_renderers[sid]
-			if rend != null and is_instance_valid(rend) and rend.has_method("set_hull_tier"):
-				rend.call("set_hull_tier", int(sd["hull_tier"]))
+		var pre_pos: Vector2 = ship.get("world_pos")
+		var pre_hdg: float = float(ship.get("heading"))
+		var rend: Node2D = ship_renderers.get(sid, null)
+
 		if sid == player_ship_id:
+			var was_sunk: bool = bool(ship.get("is_sunk"))
+			var srv_is_sunk: bool = bool(sd.get("is_sunk", false))
+			var srv_pos := Vector2(float(sd.get("x", pre_pos.x)), float(sd.get("y", pre_pos.y)))
+			var srv_hdg: float = float(sd.get("heading", pre_hdg))
+			var srv_vel := Vector2(float(sd.get("vx", 0.0)), float(sd.get("vy", 0.0)))
+			var srv_speed: float = float(sd.get("speed", srv_vel.length()))
+
+			if not _has_initial_player_snapshot or is_new_ship or srv_is_sunk or was_sunk or pre_pos.distance_to(srv_pos) > 85.0:
+				ship.call("apply_sync_dict", sd)
+				if rend != null and is_instance_valid(rend) and rend.has_method("clear_visual_offset"):
+					rend.call("clear_visual_offset")
+				if not _has_initial_player_snapshot and pixel_camera != null:
+					pixel_camera.call("snap_to_pos", srv_pos)
+				_has_initial_player_snapshot = true
+				if srv_is_sunk:
+					_client_desired_sail_state = Contracts.SailState.ANCHORED
+			else:
+				_apply_authoritative_non_kinematic(ship, sd)
+				var err_vec: Vector2 = srv_pos - pre_pos
+				var err_len: float = err_vec.length()
+				var both_idle: bool = (_client_desired_sail_state == Contracts.SailState.ANCHORED and srv_speed < 4.0 and float(ship.get("speed")) < 4.0)
+				if both_idle:
+					if err_len > 1.0:
+						var next_p: Vector2 = pre_pos.lerp(srv_pos, 0.25)
+						ship.set("world_pos", next_p)
+						ship.set("velocity", (ship.get("velocity") as Vector2).lerp(srv_vel, 0.25))
+						if rend != null and is_instance_valid(rend) and rend.has_method("add_visual_offset"):
+							rend.call("add_visual_offset", pre_pos - next_p, 0.0)
+				elif err_len > 18.0:
+					var corr: Vector2 = err_vec.normalized() * ((err_len - 18.0) * 0.35)
+					ship.set("world_pos", pre_pos + corr)
+					if rend != null and is_instance_valid(rend) and rend.has_method("add_visual_offset"):
+						rend.call("add_visual_offset", -corr, 0.0)
+
+				var hdg_diff: float = wrapf(srv_hdg - pre_hdg, -PI, PI)
+				if absf(hdg_diff) > 0.16:
+					var hdg_corr: float = hdg_diff * 0.25
+					ship.set("heading", wrapf(pre_hdg + hdg_corr, -PI, PI))
+					if rend != null and is_instance_valid(rend) and rend.has_method("add_visual_offset"):
+						rend.call("add_visual_offset", Vector2.ZERO, -hdg_corr)
+
 			player_ship = ship
-			if bool(ship.get("is_sunk")):
-				_client_desired_sail_state = Contracts.SailState.ANCHORED
 			if harbor_ui != null:
 				harbor_ui.player_ship = ship
 			if hud_overlay != null:
 				hud_overlay.player_ship = ship
+		else:
+			ship.call("apply_sync_dict", sd)
+			var next_remote_pos: Vector2 = ship.get("world_pos")
+			var next_remote_hdg: float = float(ship.get("heading"))
+			if not is_new_ship and pre_pos.distance_to(next_remote_pos) < 95.0:
+				if rend != null and is_instance_valid(rend) and rend.has_method("add_visual_offset"):
+					rend.call("add_visual_offset", pre_pos - next_remote_pos, wrapf(pre_hdg - next_remote_hdg, -PI, PI))
+			elif rend != null and is_instance_valid(rend) and rend.has_method("clear_visual_offset"):
+				rend.call("clear_visual_offset")
+
+		if sd.has("hull_tier") and rend != null and is_instance_valid(rend) and rend.has_method("set_hull_tier"):
+			rend.call("set_hull_tier", int(sd["hull_tier"]))
 
 		if bus != null:
 			bus.ship_state_updated.emit(
@@ -1036,11 +1100,61 @@ func _on_snapshot_received(snapshot: Dictionary) -> void:
 		if not seen_ids.has(eid) and eid != player_ship_id:
 			to_remove.append(eid)
 	for eid in to_remove:
+		_remote_extrap_age.erase(eid)
 		var old_ship: Node = all_ships.get(eid, null)
 		all_ships.erase(eid)
 		if is_instance_valid(old_ship):
 			old_ship.queue_free()
 		_on_ship_despawned(eid)
+
+
+func _step_client_remote_extrapolation(delta: float) -> void:
+	var bus := _bus()
+	for sid_var in all_ships.keys():
+		var sid: int = int(sid_var)
+		if sid == player_ship_id:
+			continue
+		var r_ship: Node = all_ships[sid_var]
+		if r_ship == null or not is_instance_valid(r_ship) or bool(r_ship.get("is_sunk")):
+			continue
+		var age: float = float(_remote_extrap_age.get(sid, 0.0)) + delta
+		_remote_extrap_age[sid] = age
+		if age > 0.25:
+			continue
+		var decay_w: float = 1.0 if age < 0.12 else clampf(1.0 - (age - 0.12) / 0.13, 0.0, 1.0)
+		var r_pos: Vector2 = r_ship.get("world_pos")
+		var r_vel: Vector2 = r_ship.get("velocity")
+		var r_hdg: float = float(r_ship.get("heading"))
+		var r_ang_vel: float = float(r_ship.get("angular_velocity"))
+		r_pos += r_vel * (delta * decay_w)
+		r_hdg = wrapf(r_hdg + r_ang_vel * (delta * decay_w), -PI, PI)
+		r_ship.set("world_pos", r_pos)
+		r_ship.set("heading", r_hdg)
+		if bus != null:
+			bus.ship_state_updated.emit(
+				sid,
+				r_pos,
+				r_hdg,
+				float(r_ship.get("speed")),
+				int(r_ship.get("sail_state")),
+				float(r_ship.get("hp")),
+				float(r_ship.get("max_hp"))
+			)
+
+
+func _apply_authoritative_non_kinematic(ship: Node, sd: Dictionary) -> void:
+	ship.set("faction", int(sd.get("faction", ship.get("faction"))))
+	ship.set("ship_name", str(sd.get("ship_name", ship.get("ship_name"))))
+	var new_tier: int = int(sd.get("hull_tier", ship.get("hull_tier")))
+	if new_tier != int(ship.get("hull_tier")):
+		ship.set("hull_tier", new_tier)
+		if ship.has_method("_sync_hull_radius_for_tier"):
+			ship.call("_sync_hull_radius_for_tier")
+	ship.set("hp", float(sd.get("hp", ship.get("hp"))))
+	ship.set("max_hp", float(sd.get("max_hp", ship.get("max_hp"))))
+	ship.set("is_sunk", bool(sd.get("is_sunk", ship.get("is_sunk"))))
+	ship.set("chain_slow_timer", float(sd.get("chain_slow_timer", ship.get("chain_slow_timer"))))
+	ship.set("burn_timer", float(sd.get("burn_timer", ship.get("burn_timer"))))
 
 
 func _on_ship_spawned(sid: int, ship_data: Dictionary) -> void:
@@ -1098,6 +1212,11 @@ func _on_ship_class_upgraded(sid: int, new_hull_tier: int, _class_title: String)
 		r.call("set_hull_tier", new_hull_tier)
 	if sid == player_ship_id and network_manager != null and network_manager.current_mode == NetworkManager.Mode.CLIENT:
 		network_manager.send_ship_class_upgrade(new_hull_tier)
+
+
+func _on_ship_repaired(sid: int, new_hp: float, _max_hp: float, _cost: int) -> void:
+	if sid == player_ship_id and network_manager != null and network_manager.current_mode == NetworkManager.Mode.CLIENT:
+		network_manager.send_ship_repair(new_hp)
 
 
 func _on_broadside_fired(

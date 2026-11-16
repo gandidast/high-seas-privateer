@@ -25,11 +25,19 @@ func _ready() -> void:
 	_smooth_pos = global_position
 
 
+func _get_target_world_pos() -> Vector2:
+	if is_instance_valid(_follow_target):
+		if _follow_target.has_method("get_smooth_world_pos"):
+			return _follow_target.call("get_smooth_world_pos")
+		return _follow_target.global_position
+	return Vector2.ZERO
+
+
 func set_follow_target(target: Node2D) -> void:
 	_follow_target = target
 	_has_prev_target_pos = false
 	if is_instance_valid(_follow_target):
-		_prev_target_pos = _follow_target.global_position
+		_prev_target_pos = _get_target_world_pos()
 		_has_prev_target_pos = true
 
 
@@ -37,7 +45,7 @@ func snap_to_pos(world_pos: Vector2) -> void:
 	_smooth_pos = world_pos
 	_lookahead_offset = Vector2.ZERO
 	if is_instance_valid(_follow_target):
-		_prev_target_pos = _follow_target.global_position
+		_prev_target_pos = _get_target_world_pos()
 		_has_prev_target_pos = true
 	global_position = _smooth_pos.round()
 
@@ -65,7 +73,7 @@ func get_world_mouse_pos() -> Vector2:
 
 func _process(delta: float) -> void:
 	if is_instance_valid(_follow_target):
-		var target_pos: Vector2 = _follow_target.global_position
+		var target_pos: Vector2 = _get_target_world_pos()
 		var est_vel := Vector2.ZERO
 		if _has_prev_target_pos and delta > 0.0001:
 			var raw_vel: Vector2 = (target_pos - _prev_target_pos) / delta

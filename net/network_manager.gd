@@ -48,6 +48,8 @@ var all_ships_ref: Dictionary = {}
 var _peer: WebSocketMultiplayerPeer = null
 var _sync_accum: float = 0.0
 var _input_accum: float = 0.0
+var _last_sent_steer: float = 0.0
+var _last_sent_sail: int = Contracts.SailState.ANCHORED
 var _peer_names: Dictionary = {} # peer_id (int) -> String
 var _signals_bound: bool = false
 
@@ -294,6 +296,8 @@ func connect_or_autostart(url: String, captain_name: String = "Käpt'n") -> void
 	else:
 		if used_placeholder_fallback:
 			connection_status_changed.emit("Platzhalter erkannt – verbinde mit %s ..." % _pending_url)
+		elif _pending_url.contains("hf.space"):
+			connection_status_changed.emit("Verbinde mit Hugging Face One-World (%s)..." % _pending_url)
 		elif _pending_url.contains("onrender.com"):
 			connection_status_changed.emit("Verbinde mit One-World (%s – Render Free Tier wacht ggf. ~25s auf)..." % _pending_url)
 		else:
@@ -405,8 +409,13 @@ func step_network(delta: float, local_steer: float = 0.0, local_sail_state: int 
 	elif current_mode == Mode.CLIENT:
 		if multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			_input_accum += delta
-			if _input_accum >= INPUT_INTERVAL:
+			var steer_changed: bool = absf(local_steer - _last_sent_steer) > 0.05
+			var sail_changed: bool = local_sail_state != _last_sent_sail
+			var interval: float = 0.12 if (absf(local_steer) < 0.05 and local_sail_state == _last_sent_sail) else INPUT_INTERVAL
+			if steer_changed or sail_changed or _input_accum >= interval:
 				_input_accum = 0.0
+				_last_sent_steer = local_steer
+				_last_sent_sail = local_sail_state
 				rpc_id(1, "rpc_send_input", local_steer, local_sail_state)
 
 
@@ -414,6 +423,8 @@ func send_input_immediately(local_steer: float, local_sail_state: int) -> void:
 	if current_mode == Mode.CLIENT and multiplayer.multiplayer_peer != null:
 		if multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			_input_accum = 0.0
+			_last_sent_steer = local_steer
+			_last_sent_sail = local_sail_state
 			rpc_id(1, "rpc_send_input", local_steer, local_sail_state)
 
 
@@ -433,6 +444,12 @@ func send_ship_class_upgrade(new_hull_tier: int) -> void:
 	if current_mode == Mode.CLIENT and multiplayer.multiplayer_peer != null:
 		if multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			rpc_id(1, "rpc_upgrade_ship_class", new_hull_tier)
+
+
+func send_ship_repair(new_hp: float) -> void:
+	if current_mode == Mode.CLIENT and multiplayer.multiplayer_peer != null:
+		if multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+			rpc_id(1, "rpc_repair_ship", new_hp)
 
 
 # ==============================================================================
@@ -680,6 +697,17 @@ func rpc_upgrade_ship_class(new_hull_tier: int) -> void:
 	var ship: Node = all_ships_ref.get(sender_id, null)
 	if ship != null and ship.has_method("upgrade_ship_class"):
 		ship.call("upgrade_ship_class", clampi(new_hull_tier, 0, 2))
+
+
+@rpc("any_peer", "reliable")
+func rpc_repair_ship(new_hp: float) -> void:
+	if current_mode != Mode.SERVER:
+		return
+	var sender_id: int = multiplayer.get_remote_sender_id()
+	var ship: Node = all_ships_ref.get(sender_id, null)
+	if ship != null and not bool(ship.get("is_sunk")):
+		var mhp: float = float(ship.get("max_hp"))
+		ship.set("hp", clampf(new_hp, 1.0, mhp))
 
 
 @rpc("authority", "unreliable_ordered")

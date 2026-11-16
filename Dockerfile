@@ -2,15 +2,17 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GODOT_VERSION="4.7.2-stable"
-ENV PORT=8080
+ENV PORT=7860
+ENV HOME=/tmp
 
-# Install dependencies required by Godot 4 Headless on Ubuntu 22.04
+# Install dependencies required by Godot 4 Headless + nginx WebSocket/HTTP health proxy
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     unzip \
     libfontconfig1 \
     libfreetype6 \
+    nginx \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install Godot 4 Linux x86_64 binary
@@ -24,10 +26,13 @@ RUN curl -fSL --retry 3 "https://github.com/godotengine/godot/releases/download/
 WORKDIR /app
 COPY . /app
 
-# Pre-generate Godot global script class cache and resource imports during image build
-RUN godot --headless --path /app --import || true
+# Pre-generate Godot global script class cache and ensure UID 1000 (Hugging Face) compatibility
+RUN sed -i 's/\r$//' /app/deploy/docker-entrypoint.sh \
+    && chmod +x /app/deploy/docker-entrypoint.sh \
+    && godot --headless --path /app --import || true \
+    && chmod -R a+rwX /app
 
-EXPOSE 8080
+EXPOSE 7860
 
-# Render.com and Koyeb inject $PORT automatically; NetworkManager reads OS.get_environment("PORT") (fallback 8080)
-CMD ["godot", "--headless", "--path", "/app", "--", "--server"]
+# Runs nginx on $PORT (7860 on HF Spaces, $PORT on Render/Koyeb) proxying wss:// to Godot --server
+CMD ["/app/deploy/docker-entrypoint.sh"]
