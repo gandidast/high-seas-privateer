@@ -9,7 +9,7 @@ extends Node
 ## via both `Contracts` (class_name) and `EventBus` (Autoload singleton).
 
 const DEFAULT_WORLD_SEED: int = 1337420
-const WORLD_HALF_EXTENT: float = 2400.0
+const WORLD_HALF_EXTENT: float = 3600.0
 const SERVER_DEFAULT_PORT: int = 8080
 
 # Water depth thresholds returned by get_water_depth(world_pos, world_seed):
@@ -30,7 +30,8 @@ enum SlotType {
 	DECK_STARBOARD = 2,  ## Right broadside rail slots (cannons fire starboard)
 	MAST = 3,            ## Centerline rigging/sail slots
 	CARGO_HOLD = 4,      ## Interior hold / general hull slots
-	ANY = 5              ## Universal slot
+	ANY = 5,             ## Universal slot
+	BOW = 6              ## Forward bow weapon slot (fires ahead)
 }
 
 enum ItemRarity {
@@ -60,10 +61,116 @@ enum ItemCategory {
 }
 
 enum ShipClass {
-	SLOOP = 0,       ## Schaluppe (Tier 0: wendig, 1 Mast, Starter)
-	BRIGANTINE = 1,  ## Brigg (Tier 1: Allrounder, 2 Masten, mehr Kanonenplätze)
-	FRIGATE = 2      ## Schwere Fregatte / Galeone (Tier 2: volles 8x6 Grid, 3 Masten, schwere Panzerung)
+	SLOOP = 0,           ## Schaluppe (Tier 0: wendig, 1 Mast, Starter)
+	SCHOONER = 1,        ## Schoner (Tier 1: flink, 6x5 Grid)
+	BRIGANTINE = 2,      ## Brigg (Tier 2: Allrounder, 7x5 Grid)
+	FRIGATE = 3,         ## Fregatte (Tier 3: 8x6 Grid, schwere Breitseite)
+	CORSAIR_CLIPPER = 4, ## Kaper-Klipper (Tier 4: schnellster Jäger, +15% Nachladegeschwindigkeit)
+	WAR_GALLEON = 5      ## Kriegsgaleone (Tier 5: 10x7 Grid, schwere Panzerung & Feuerkraft)
 }
+
+const SHIP_CLASS_SPECS: Dictionary = {
+	ShipClass.SLOOP: {
+		"tier": ShipClass.SLOOP,
+		"name": "Schaluppe",
+		"cost": 0,
+		"grid_cols": 6,
+		"grid_rows": 4,
+		"base_hp": 120.0,
+		"base_speed": 95.0,
+		"armor": 0.0,
+		"turn_speed": 1.75,
+		"inertia": 6.5,
+		"accel": 48.0,
+		"max_weight": 45.0,
+		"hull_radius": 14.0,
+		"reload_bonus": 1.0
+	},
+	ShipClass.SCHOONER: {
+		"tier": ShipClass.SCHOONER,
+		"name": "Schoner",
+		"cost": 180,
+		"grid_cols": 6,
+		"grid_rows": 5,
+		"base_hp": 165.0,
+		"base_speed": 106.0,
+		"armor": 1.0,
+		"turn_speed": 1.72,
+		"inertia": 6.2,
+		"accel": 48.0,
+		"max_weight": 60.0,
+		"hull_radius": 15.0,
+		"reload_bonus": 1.0
+	},
+	ShipClass.BRIGANTINE: {
+		"tier": ShipClass.BRIGANTINE,
+		"name": "Brigg",
+		"cost": 380,
+		"grid_cols": 7,
+		"grid_rows": 5,
+		"base_hp": 225.0,
+		"base_speed": 101.0,
+		"armor": 2.0,
+		"turn_speed": 1.60,
+		"inertia": 5.6,
+		"accel": 45.0,
+		"max_weight": 80.0,
+		"hull_radius": 16.0,
+		"reload_bonus": 1.0
+	},
+	ShipClass.FRIGATE: {
+		"tier": ShipClass.FRIGATE,
+		"name": "Fregatte",
+		"cost": 780,
+		"grid_cols": 8,
+		"grid_rows": 6,
+		"base_hp": 330.0,
+		"base_speed": 97.0,
+		"armor": 4.0,
+		"turn_speed": 1.42,
+		"inertia": 4.6,
+		"accel": 42.0,
+		"max_weight": 115.0,
+		"hull_radius": 19.0,
+		"reload_bonus": 1.0
+	},
+	ShipClass.CORSAIR_CLIPPER: {
+		"tier": ShipClass.CORSAIR_CLIPPER,
+		"name": "Kaper-Klipper",
+		"cost": 1100,
+		"grid_cols": 6,
+		"grid_rows": 5,
+		"base_hp": 215.0,
+		"base_speed": 134.0,
+		"armor": 1.5,
+		"turn_speed": 2.05,
+		"inertia": 7.2,
+		"accel": 58.0,
+		"max_weight": 70.0,
+		"hull_radius": 15.0,
+		"reload_bonus": 1.15
+	},
+	ShipClass.WAR_GALLEON: {
+		"tier": ShipClass.WAR_GALLEON,
+		"name": "Kriegsgaleone",
+		"cost": 2400,
+		"grid_cols": 10,
+		"grid_rows": 7,
+		"base_hp": 620.0,
+		"base_speed": 90.0,
+		"armor": 8.5,
+		"turn_speed": 1.18,
+		"inertia": 3.8,
+		"accel": 38.0,
+		"max_weight": 190.0,
+		"hull_radius": 23.0,
+		"reload_bonus": 1.0
+	}
+}
+
+static func get_ship_class_spec(tier: int) -> Dictionary:
+	var clamped_tier: int = clampi(tier, ShipClass.SLOOP, ShipClass.WAR_GALLEON)
+	return SHIP_CLASS_SPECS.get(clamped_tier, SHIP_CLASS_SPECS[ShipClass.SLOOP])
 
 enum WeatherState {
 	CLEAR = 0,       ## Klare See & Sonnenschein
@@ -122,6 +229,7 @@ signal cannonball_spawned(shot_data: Dictionary)
 signal cannonball_impact(world_pos: Vector2, hit_ship_id: int, damage: float, is_water_splash: bool, is_powder_crit: bool)
 signal ship_damaged(ship_id: int, damage: float, new_hp: float, max_hp: float, world_pos: Vector2)
 signal ship_sunk(ship_id: int, world_pos: Vector2, faction: int, killer_ship_id: int)
+signal player_death_penalty(ship_id: int, gold_lost: int, respawn_seconds: float)
 signal wanted_level_changed(new_level: int)
 signal fort_spawned(fort_id: int, world_pos: Vector2, island_index: int, max_hp: float)
 signal fort_damaged(fort_id: int, hp: float, max_hp: float, world_pos: Vector2)
@@ -188,6 +296,7 @@ class GridItemData extends Resource:
 	@export var projectile_speed: float = 220.0
 	@export var chain_shot_slow: float = 0.0
 	@export var spread_angle_deg: float = 6.0
+	@export var pellet_count: int = 1
 
 	# Ship & Synergy modifiers
 	@export var speed_bonus: float = 0.0
@@ -282,6 +391,7 @@ class GridItemData extends Resource:
 		copy.projectile_speed = projectile_speed
 		copy.chain_shot_slow = chain_shot_slow
 		copy.spread_angle_deg = spread_angle_deg
+		copy.pellet_count = pellet_count
 		copy.speed_bonus = speed_bonus
 		copy.turn_bonus = turn_bonus
 		copy.armor_bonus = armor_bonus
@@ -319,6 +429,7 @@ class GridItemData extends Resource:
 			"projectile_speed": projectile_speed,
 			"chain_shot_slow": chain_shot_slow,
 			"spread_angle_deg": spread_angle_deg,
+			"pellet_count": pellet_count,
 			"speed_bonus": speed_bonus,
 			"turn_bonus": turn_bonus,
 			"armor_bonus": armor_bonus,
@@ -360,6 +471,7 @@ class GridItemData extends Resource:
 		item.projectile_speed = float(d.get("projectile_speed", 220.0))
 		item.chain_shot_slow = float(d.get("chain_shot_slow", 0.0))
 		item.spread_angle_deg = float(d.get("spread_angle_deg", 6.0))
+		item.pellet_count = int(d.get("pellet_count", 1))
 		item.speed_bonus = float(d.get("speed_bonus", 0.0))
 		item.turn_bonus = float(d.get("turn_bonus", 0.0))
 		item.armor_bonus = float(d.get("armor_bonus", 0.0))
@@ -397,10 +509,13 @@ class ShipStats extends RefCounted:
 	var cargo_weight_penalty: float = 0.0  ## 0.0 .. 0.45 speed/turn reduction
 	var port_cannons: Array = []          ## Array[Dictionary] of compiled port cannon mounts
 	var starboard_cannons: Array = []     ## Array[Dictionary] of compiled starboard cannon mounts
+	var bow_cannons: Array = []           ## Array[Dictionary] of compiled forward bow weapon mounts
 	var port_salvo_damage: float = 0.0
 	var starboard_salvo_damage: float = 0.0
+	var bow_salvo_damage: float = 0.0
 	var port_reload_multiplier: float = 1.0
 	var starboard_reload_multiplier: float = 1.0
+	var bow_reload_multiplier: float = 1.0
 	var explosion_hazard_damage: float = 0.0
 	var powder_barrel_count: int = 0
 	var sail_upgrade_count: int = 0
@@ -424,10 +539,13 @@ class ShipStats extends RefCounted:
 			"cargo_weight_penalty": cargo_weight_penalty,
 			"port_cannons": port_cannons.duplicate(true),
 			"starboard_cannons": starboard_cannons.duplicate(true),
+			"bow_cannons": bow_cannons.duplicate(true),
 			"port_salvo_damage": port_salvo_damage,
 			"starboard_salvo_damage": starboard_salvo_damage,
+			"bow_salvo_damage": bow_salvo_damage,
 			"port_reload_multiplier": port_reload_multiplier,
 			"starboard_reload_multiplier": starboard_reload_multiplier,
+			"bow_reload_multiplier": bow_reload_multiplier,
 			"explosion_hazard_damage": explosion_hazard_damage,
 			"powder_barrel_count": powder_barrel_count,
 			"sail_upgrade_count": sail_upgrade_count,
@@ -452,10 +570,13 @@ class ShipStats extends RefCounted:
 		s.cargo_weight_penalty = float(d.get("cargo_weight_penalty", 0.0))
 		s.port_cannons = d.get("port_cannons", []).duplicate(true)
 		s.starboard_cannons = d.get("starboard_cannons", []).duplicate(true)
+		s.bow_cannons = d.get("bow_cannons", []).duplicate(true)
 		s.port_salvo_damage = float(d.get("port_salvo_damage", 0.0))
 		s.starboard_salvo_damage = float(d.get("starboard_salvo_damage", 0.0))
+		s.bow_salvo_damage = float(d.get("bow_salvo_damage", 0.0))
 		s.port_reload_multiplier = float(d.get("port_reload_multiplier", 1.0))
 		s.starboard_reload_multiplier = float(d.get("starboard_reload_multiplier", 1.0))
+		s.bow_reload_multiplier = float(d.get("bow_reload_multiplier", 1.0))
 		s.explosion_hazard_damage = float(d.get("explosion_hazard_damage", 0.0))
 		s.powder_barrel_count = int(d.get("powder_barrel_count", 0))
 		s.sail_upgrade_count = int(d.get("sail_upgrade_count", 0))
@@ -518,7 +639,8 @@ class IslandData extends RefCounted:
 	var radius: float = 190.0
 	var harbor_angle: float = 0.0
 	var harbor_pos: Vector2 = Vector2.ZERO
-	var harbor_radius: float = 85.0
+	var harbor_radius: float = 125.0
+	var has_harbor: bool = true
 	var seed_phase: float = 0.0
 
 	func to_dict() -> Dictionary:
@@ -530,6 +652,7 @@ class IslandData extends RefCounted:
 			"harbor_angle": harbor_angle,
 			"harbor_pos": harbor_pos,
 			"harbor_radius": harbor_radius,
+			"has_harbor": has_harbor,
 			"seed_phase": seed_phase
 		}
 
@@ -590,26 +713,32 @@ class QuestData extends RefCounted:
 # (sin, cos, atan2, length, clamp) so that GLSL in `ocean_shader.gdshader` and
 # GDScript in `world_map.gd` / `ship_physics.gd` produce 100% identical results!
 
-const ISLAND_COUNT: int = 6
+const ISLAND_COUNT: int = 8
+const SAFE_HARBOR_INDICES: Array[int] = [0, 1, 2]
 
 const ISLAND_NAMES: Array[String] = [
 	"Port Tortuga",
 	"Smaragd-Atoll",
-	"Krakenzahn-Bucht",
 	"San Aurelio",
-	"Schädelriff-Hafen",
-	"Neu-Nassau"
+	"Krakenzahn-Bucht",
+	"Schädelriff",
+	"Neu-Nassau",
+	"Sturmkap-Feste",
+	"Blutgold-Insel"
 ]
 
 # Base island archetypes: Vector4(base_x, base_y, base_radius, harbor_angle_rad)
-# Placed around the open central starting sea (0, 0 is deep navigable ocean!).
+# Placed across [-2500..+2500] around the open central starting sea (0, 0 is deep navigable ocean!).
+# Indices 0..2 are safe harbors (NW, NE, South); indices 3..7 are wild pirate/fort/treasure islands.
 const BASE_ISLAND_SPECS: Array[Vector4] = [
-	Vector4(-560.0, -340.0, 175.0, 0.55),   # 0: Port Tortuga (NW, harbor facing SE toward spawn)
-	Vector4(620.0, -380.0, 190.0, 2.45),    # 1: Smaragd-Atoll (NE, harbor facing SW)
-	Vector4(-680.0, 440.0, 165.0, -0.50),   # 2: Krakenzahn-Bucht (SW, harbor facing NE)
-	Vector4(580.0, 460.0, 200.0, -2.35),    # 3: San Aurelio (SE, harbor facing NW)
-	Vector4(0.0, -780.0, 180.0, 1.57),      # 4: Schädelriff-Hafen (North, harbor facing South)
-	Vector4(40.0, 820.0, 185.0, -1.57)      # 5: Neu-Nassau (South, harbor facing North)
+	Vector4(-780.0, -480.0, 185.0, 0.55),   # 0: Port Tortuga (Safe Harbor NW, facing SE toward spawn)
+	Vector4(1520.0, -1180.0, 195.0, 2.45),  # 1: Smaragd-Atoll (Safe Harbor NE, facing SW)
+	Vector4(120.0, 1840.0, 205.0, -1.57),   # 2: San Aurelio (Safe Harbor South, facing North)
+	Vector4(-1960.0, 920.0, 185.0, -0.45),  # 3: Krakenzahn-Bucht (Wild WSW)
+	Vector4(-220.0, -2120.0, 195.0, 1.57),  # 4: Schädelriff (Wild North)
+	Vector4(2040.0, 680.0, 200.0, -2.65),   # 5: Neu-Nassau (Wild East)
+	Vector4(-2140.0, -1680.0, 190.0, 0.72), # 6: Sturmkap-Feste (Wild NW)
+	Vector4(1880.0, 2100.0, 210.0, -2.25)   # 7: Blutgold-Insel (Wild SE)
 ]
 
 static func _seed_offset(world_seed: int, idx: int) -> Vector3:
@@ -655,7 +784,7 @@ static func get_island_coast_radius(idx: int, theta: float, world_seed: int = DE
 	var effective_r: float = base_r * (1.0 + wave - 0.28 * cove_factor)
 	return effective_r
 
-## Returns the deterministic array of all 6 named islands and their safe harbor zones.
+## Returns the deterministic array of all 8 named islands (3 safe harbors, 5 wild islands).
 static func get_islands(world_seed: int = DEFAULT_WORLD_SEED) -> Array[IslandData]:
 	var result: Array[IslandData] = []
 	for i in range(ISLAND_COUNT):
@@ -666,11 +795,13 @@ static func get_islands(world_seed: int = DEFAULT_WORLD_SEED) -> Array[IslandDat
 		isl.radius = get_island_radius(i, world_seed)
 		isl.harbor_angle = get_island_harbor_angle(i, world_seed)
 		isl.seed_phase = get_island_phase(i, world_seed)
+		var is_safe_harbor: bool = i in SAFE_HARBOR_INDICES
+		isl.has_harbor = is_safe_harbor
 		var coast_r_at_harbor: float = get_island_coast_radius(i, isl.harbor_angle, world_seed)
 		var dir := Vector2(cos(isl.harbor_angle), sin(isl.harbor_angle))
-		# Place harbor safe-zone center 46px outside the cove shoreline (guaranteed navigable water!)
+		# Place safe offshore anchorage 46px outside the cove shoreline (guaranteed navigable water!)
 		isl.harbor_pos = isl.center + dir * (coast_r_at_harbor + 46.0)
-		isl.harbor_radius = 85.0
+		isl.harbor_radius = 125.0 if is_safe_harbor else 0.0
 		result.append(isl)
 	return result
 

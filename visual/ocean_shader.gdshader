@@ -7,7 +7,7 @@ uniform int world_seed = 1337420;
 uniform vec2 camera_world_pos = vec2(0.0, 0.0);
 uniform vec2 viewport_size = vec2(768.0, 448.0);
 uniform sampler2D world_depth_tex : filter_linear, repeat_disable;
-uniform float world_half_extent = 2400.0;
+uniform float world_half_extent = 3600.0;
 uniform bool has_baked_depth = false;
 uniform vec2 wind_dir = vec2(1.0, 0.0);
 uniform float wind_strength = 1.0;

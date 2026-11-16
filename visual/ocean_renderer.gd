@@ -369,30 +369,31 @@ func _rebuild_harbor_props() -> void:
 		var coast_r: float = Contracts.get_island_coast_radius(isl.index, isl.harbor_angle, _world_seed)
 		var dir := Vector2(cos(isl.harbor_angle), sin(isl.harbor_angle))
 
-		var pier_pos: Vector2 = (isl.center + dir * (coast_r + 14.0)).round()
-		var pier_sprite := Sprite2D.new()
-		pier_sprite.name = "Pier_%d" % isl.index
-		pier_sprite.texture = _pier_texture
-		pier_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-		pier_sprite.position = pier_pos
-		pier_sprite.rotation = isl.harbor_angle
-		_harbor_root.add_child(pier_sprite)
-		_harbor_props.append({ "node": pier_sprite, "pos": pier_pos, "margin": 48.0 })
+		if isl.has_harbor:
+			var pier_pos: Vector2 = (isl.center + dir * (coast_r + 14.0)).round()
+			var pier_sprite := Sprite2D.new()
+			pier_sprite.name = "Pier_%d" % isl.index
+			pier_sprite.texture = _pier_texture
+			pier_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+			pier_sprite.position = pier_pos
+			pier_sprite.rotation = isl.harbor_angle
+			_harbor_root.add_child(pier_sprite)
+			_harbor_props.append({ "node": pier_sprite, "pos": pier_pos, "margin": 48.0 })
 
-		_harbor_buoy_markers.append({
-			"index": isl.index,
-			"pos": isl.harbor_pos,
-			"radius": isl.harbor_radius
-		})
+			_harbor_buoy_markers.append({
+				"index": isl.index,
+				"pos": isl.harbor_pos,
+				"radius": isl.harbor_radius
+			})
 
-		var banner := _create_island_banner(isl.name)
+		var banner := _create_island_banner(isl.name, isl.has_harbor)
 		var banner_anchor: Vector2 = (isl.center + dir * (coast_r - 22.0) + Vector2(0.0, -26.0)).round()
 		banner.position = banner_anchor
 		_harbor_root.add_child(banner)
 		_harbor_props.append({ "node": banner, "pos": banner_anchor, "margin": 96.0 })
 
 
-func _create_island_banner(island_name: String) -> Node2D:
+func _create_island_banner(island_name: String, is_safe_harbor: bool = true) -> Node2D:
 	var holder := Node2D.new()
 	holder.z_index = 22
 
@@ -401,7 +402,7 @@ func _create_island_banner(island_name: String) -> Node2D:
 
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.094, 0.075, 0.114, 0.94)
-	style.border_color = Color(0.847, 0.663, 0.294, 1.0)
+	style.border_color = Color(0.847, 0.663, 0.294, 1.0) if is_safe_harbor else Color(0.745, 0.314, 0.267, 1.0)
 	style.set_border_width_all(1)
 	style.set_corner_radius_all(3)
 	style.shadow_color = Color(0.04, 0.03, 0.07, 0.55)

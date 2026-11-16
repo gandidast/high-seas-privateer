@@ -1,12 +1,13 @@
 class_name WorldMap
 extends Node
-## Deterministic world manager wrapping Contracts water depth, 6 named islands,
-## safe harbor zones, coastal fort positions, shoals, ship hull collision checks,
+## Deterministic world manager wrapping Contracts water depth, 8 named islands,
+## 3 safe harbor zones, 5 wild coastal fort islands, shoals, ship hull collision checks,
 ## global wind state, and dynamic weather (Clear, Fog, Storm).
 
 const HULL_SAMPLE_ANGLES: int = 8
 const WIND_EMIT_INTERVAL: float = 0.20
 const WEATHER_EMIT_INTERVAL: float = 0.35
+const BAD_WEATHER_ENABLED: bool = false
 
 var world_seed: int = Contracts.DEFAULT_WORLD_SEED
 var islands: Array[Contracts.IslandData] = []
@@ -57,7 +58,10 @@ func setup(p_seed: int = Contracts.DEFAULT_WORLD_SEED) -> void:
 func set_weather(state: int, intensity: float = 1.0) -> void:
 	var clamped_state: int = clampi(state, Contracts.WeatherState.CLEAR, Contracts.WeatherState.STORM)
 	var clamped_intensity: float = clampf(intensity, 0.0, 1.0)
-	if clamped_state == Contracts.WeatherState.CLEAR and intensity >= 1.0:
+	if not BAD_WEATHER_ENABLED:
+		clamped_state = Contracts.WeatherState.CLEAR
+		clamped_intensity = 0.0
+	elif clamped_state == Contracts.WeatherState.CLEAR and intensity >= 1.0:
 		clamped_intensity = 0.0
 
 	current_weather = clamped_state
@@ -104,6 +108,19 @@ func step_wind(delta: float) -> void:
 
 
 func _step_weather(delta: float) -> void:
+	if not BAD_WEATHER_ENABLED:
+		var was_active: bool = (
+			current_weather != Contracts.WeatherState.CLEAR
+			or weather_intensity > 0.0
+		)
+		current_weather = Contracts.WeatherState.CLEAR
+		_target_weather = Contracts.WeatherState.CLEAR
+		weather_intensity = 0.0
+		_target_intensity = 0.0
+		if was_active:
+			Contracts.bus().weather_changed.emit(current_weather, weather_intensity)
+		return
+
 	weather_timer -= delta
 	if weather_timer <= 0.0:
 		_advance_weather_cycle()
@@ -174,6 +191,8 @@ func get_fort_positions() -> Array[Dictionary]:
 
 	var result: Array[Dictionary] = []
 	for isl in islands:
+		if isl.has_harbor:
+			continue
 		var best_theta: float = wrapf(isl.harbor_angle + PI, -PI, PI)
 		var best_coast_r: float = -1.0
 		const SAMPLES: int = 24
@@ -252,9 +271,24 @@ func check_hull_collision(world_pos: Vector2, hull_radius: float = 14.0) -> Dict
 
 func get_harbor_at(world_pos: Vector2) -> int:
 	for isl in islands:
+		if not isl.has_harbor or isl.harbor_radius <= 0.0:
+			continue
 		if world_pos.distance_to(isl.harbor_pos) <= isl.harbor_radius:
 			return isl.index
 	return -1
+
+
+func get_nearest_safe_harbor(world_pos: Vector2) -> Contracts.IslandData:
+	var best: Contracts.IslandData = null
+	var best_dist_sq: float = INF
+	for isl in islands:
+		if not isl.has_harbor:
+			continue
+		var dist_sq: float = world_pos.distance_squared_to(isl.harbor_pos)
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
+			best = isl
+	return best
 
 
 func get_island(index: int) -> Contracts.IslandData:
