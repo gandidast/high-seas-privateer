@@ -29,6 +29,16 @@ static func bake_item_grid_icon(
 			WeaponPainters.icon_swivel_gun(img, w, h, affix)
 		"bronze_cannon_2x2":
 			WeaponPainters.icon_bronze_cannon(img, w, h, affix)
+		"carronade_2x1":
+			WeaponPainters.icon_carronade(img, w, h, affix)
+		"organ_gun_2x2":
+			WeaponPainters.icon_organ_gun(img, w, h)
+		"twin_cannon_2x3":
+			WeaponPainters.icon_twin_cannon(img, w, h, affix)
+		"pitch_mortar_2x2":
+			WeaponPainters.icon_pitch_mortar(img, w, h)
+		"bow_chaser_1x2":
+			WeaponPainters.icon_bow_chaser(img, w, h)
 		"chain_launcher_2x1":
 			WeaponPainters.icon_chain_launcher(img, w, h)
 		"long_culverin_1x3":
@@ -113,8 +123,10 @@ static func bake_module_texture(category: int, rarity: int = 0, affix: int = 0) 
 			_draw_module_powder_barrel(img)
 		Contracts.ItemCategory.SAIL:
 			_draw_module_sail(img, rarity)
-		Contracts.ItemCategory.HULL, Contracts.ItemCategory.BOW_WEAPON:
+		Contracts.ItemCategory.HULL:
 			_draw_module_hull_plate(img)
+		Contracts.ItemCategory.BOW_WEAPON:
+			_draw_module_bow_weapon(img, affix)
 		Contracts.ItemCategory.TREASURE:
 			_draw_module_treasure_chest(img)
 		Contracts.ItemCategory.CREW_MOD:
@@ -246,3 +258,18 @@ static func _draw_module_crew_mod(img: Image) -> void:
 	img.set_pixel(8, 7, lantern)
 	img.set_pixel(7, 8, lantern)
 	img.set_pixel(8, 8, brass)
+
+
+static func _draw_module_bow_weapon(img: Image, affix: int) -> void:
+	var brass_d := Color(0.510, 0.310, 0.145, 1.0)
+	var brass_m := Color(0.840, 0.590, 0.220, 1.0)
+	var brass_h := Color(0.451, 0.941, 0.788, 1.0) if affix == Contracts.ItemAffix.CURSED else Color(0.990, 0.870, 0.440, 1.0)
+	Draw.rect(img, 2, 5, 5, 6, Draw.WOOD_MID)
+	for x in range(3, 15):
+		for y in range(6, 10):
+			if x >= 11 and (y == 6 or y == 9):
+				continue
+			var c: Color = brass_h if y == 6 else (brass_d if y == 9 else brass_m)
+			if x == 8 or x == 14:
+				c = brass_h if y < 8 else brass_d
+			img.set_pixel(x, y, c)

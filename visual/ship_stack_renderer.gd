@@ -1,8 +1,8 @@
 class_name ShipStackRenderer
 extends Node2D
 ## Renders a ship in crisp 2D pixel-art diorama style using 24 tightly stacked Sprite2D layers,
-## 3 distinct ship classes (Sloop / Brigantine / Frigate), waterline foam, bow wave,
-## stern wake trail, and 360-degree rotating deck modules.
+## 6 distinct ship classes (Sloop / Schooner / Brigantine / Frigate / Corsair Clipper / War Galleon),
+## waterline foam, bow wave, stern wake trail, sunken wreck state, and 360-degree rotating deck modules.
 
 const LAYER_COUNT: int = 24
 const LAYER_Y_STEP: float = -0.75
@@ -10,6 +10,7 @@ const LAYER_SCALE: float = 1.0
 const CULL_MARGIN_PX: float = 180.0
 const OUTLINE_COLOR := Color(0.094, 0.078, 0.145, 1.0) # #181425
 const FLASH_TINT := Color(1.9, 1.4, 1.1, 1.0)
+const SUNK_TINT := Color(0.42, 0.45, 0.54, 0.72)
 const BOW_WAVE_COL := Color(0.96, 0.99, 1.0, 0.85)
 const MUZZLE_OUTER_COL := Color(1.0, 0.62, 0.16, 0.95)
 const MUZZLE_INNER_COL := Color(1.0, 0.96, 0.78, 1.0)
@@ -63,6 +64,8 @@ var _cached_name_visible: bool = false
 
 var _last_applied_sail_state: int = -1
 var _last_applied_flash: bool = false
+var _is_sunk: bool = false
+var _last_applied_sunk: bool = false
 var _was_onscreen: bool = true
 
 
@@ -130,20 +133,40 @@ func setup_ship(p_ship_id: int, p_faction: int, p_name: String = "", p_hull_tier
 	ship_id = p_ship_id
 	faction = p_faction
 	ship_name = p_name
-	hull_tier = clampi(p_hull_tier, 0, 2)
+	hull_tier = clampi(p_hull_tier, 0, 5)
+	_is_sunk = false
+	_last_applied_sunk = false
 	_bob_phase = float(p_ship_id % 97) * 0.73
 	_rebuild_layer_stack()
 	_update_nameplate()
 
 
 func set_hull_tier(tier: int) -> void:
-	var clamped: int = clampi(tier, 0, 2)
+	var clamped: int = clampi(tier, 0, 5)
 	if clamped == hull_tier and not _layer_sprites.is_empty():
 		return
 	hull_tier = clamped
 	_ensure_nodes()
 	_rebuild_layer_stack()
 	_apply_stack_transforms(0.0, true)
+
+
+func set_sunk(sunk: bool) -> void:
+	if _is_sunk == sunk:
+		return
+	_is_sunk = sunk
+	if _is_sunk:
+		_foam_dots.clear()
+		_wake_world_points.clear()
+		if _wake_line != null:
+			_wake_local_pts.resize(0)
+			_wake_line.points = _wake_local_pts
+			_wake_line.visible = false
+	elif _wake_line != null:
+		_wake_line.visible = true
+	_update_nameplate()
+	_apply_stack_transforms(0.0, true)
+	queue_redraw()
 
 
 func _rebuild_layer_stack() -> void:
@@ -192,7 +215,10 @@ func update_transform_state(
 	_sail_state = sail_state
 	_hp = hp
 	_max_hp = maxf(1.0, max_hp)
-	_update_nameplate()
+	if (hp <= 0.0) != _is_sunk:
+		set_sunk(hp <= 0.0)
+	else:
+		_update_nameplate()
 
 
 func set_kinematic_velocity(p_velocity: Vector2, p_angular_velocity: float) -> void:
@@ -226,8 +252,12 @@ func update_equipped_modules(equipped_items: Array) -> void:
 			spr.queue_free()
 	_module_entries.clear()
 
-	var hull_len_span: float = [11.5, 15.0, 18.5][clampi(hull_tier, 0, 2)]
-	var rail_y: float = [5.8, 7.4, 9.0][clampi(hull_tier, 0, 2)]
+	var tier_idx: int = clampi(hull_tier, 0, 5)
+	var hull_len_span: float = [11.5, 13.5, 15.0, 18.5, 16.5, 22.0][tier_idx]
+	var rail_y: float = [5.6, 6.2, 7.6, 9.0, 6.0, 11.2][tier_idx]
+	var class_spec: Dictionary = Contracts.get_ship_class_spec(tier_idx)
+	var grid_w: int = maxi(4, int(class_spec.get("grid_cols", 8)))
+	var grid_h: int = maxi(4, int(class_spec.get("grid_rows", 6)))
 	var deck_layer: float = round(0.42 * float(LAYER_COUNT - 1))
 
 	for raw_item in equipped_items:
@@ -272,16 +302,22 @@ func update_equipped_modules(equipped_items: Array) -> void:
 
 		var cx: float = float(gx) + float(eff_w - 1) * 0.5
 		var cy: float = float(gy) + float(eff_h - 1) * 0.5
-		var local_x: float = lerpf(-hull_len_span, hull_len_span, clampf(cx / 7.0, 0.0, 1.0))
+		var local_x: float = lerpf(-hull_len_span, hull_len_span, clampf(cx / float(maxi(1, grid_w - 1)), 0.0, 1.0))
 		var local_y: float = 0.0
 		var local_rot: float = 0.0
 		var stack_layer: float = deck_layer
 
+		var on_bow: bool = (slot_type == Contracts.SlotType.BOW) or (cat == Contracts.ItemCategory.BOW_WEAPON)
 		var on_port: bool = (slot_type == Contracts.SlotType.DECK_PORT) or (gy == 0)
-		var on_starboard: bool = (slot_type == Contracts.SlotType.DECK_STARBOARD) or (gy + eff_h - 1 >= 5)
+		var on_starboard: bool = (slot_type == Contracts.SlotType.DECK_STARBOARD) or (gy + eff_h - 1 >= grid_h - 1)
 		var on_mast: bool = (slot_type == Contracts.SlotType.MAST) or (cat == Contracts.ItemCategory.SAIL)
 
-		if on_port and not on_starboard:
+		if on_bow:
+			local_x = hull_len_span * 0.92
+			local_y = 0.0
+			local_rot = 0.0
+			stack_layer = deck_layer + 1.0
+		elif on_port and not on_starboard:
 			local_y = -rail_y
 			stack_layer = deck_layer + 1.0
 			if cat == Contracts.ItemCategory.CANNON:
@@ -295,7 +331,7 @@ func update_equipped_modules(equipped_items: Array) -> void:
 			local_y = 0.0
 			stack_layer = float(_sail_layer_range.x)
 		else:
-			local_y = lerpf(-rail_y * 0.45, rail_y * 0.45, clampf((cy - 1.0) / 3.0, 0.0, 1.0))
+			local_y = lerpf(-rail_y * 0.45, rail_y * 0.45, clampf((cy - 1.0) / float(maxi(1, grid_h - 3)), 0.0, 1.0))
 			stack_layer = deck_layer - 1.0
 
 		var tex: ImageTexture = ProceduralShipBaker.bake_module_texture(cat, rarity, affix)
@@ -318,18 +354,33 @@ func update_equipped_modules(equipped_items: Array) -> void:
 
 
 func trigger_muzzle_flash(is_starboard: bool) -> void:
-	if not _is_within_camera_bounds(CULL_MARGIN_PX):
+	if _is_sunk or not _is_within_camera_bounds(CULL_MARGIN_PX):
 		return
 	var side_sign: float = 1.0 if is_starboard else -1.0
-	var rail_dist: float = [8.5, 10.5, 12.5][clampi(hull_tier, 0, 2)]
+	var rail_dist: float = [8.2, 9.0, 10.6, 12.5, 9.0, 15.0][clampi(hull_tier, 0, 5)]
 	for offset_x in [-7.0, 2.0, 10.0]:
 		_muzzle_flashes.append({
 			"local_pos": Vector2(offset_x, side_sign * rail_dist),
 			"side_sign": side_sign,
+			"is_bow": false,
 			"age": 0.0,
 			"duration": 0.22
 		})
 	_roll_amount = clampf(_roll_amount - side_sign * 1.5, -2.4, 2.4)
+	queue_redraw()
+
+
+func trigger_bow_muzzle_flash() -> void:
+	if _is_sunk or not _is_within_camera_bounds(CULL_MARGIN_PX):
+		return
+	var bow_x: float = [12.0, 14.0, 15.5, 19.0, 17.5, 22.5][clampi(hull_tier, 0, 5)]
+	_muzzle_flashes.append({
+		"local_pos": Vector2(bow_x, 0.0),
+		"side_sign": 0.0,
+		"is_bow": true,
+		"age": 0.0,
+		"duration": 0.22
+	})
 	queue_redraw()
 
 
@@ -395,6 +446,17 @@ func _process(delta: float) -> void:
 	var r_hdg: float = _render_heading()
 	var turn_delta: float = wrapf(r_hdg - _prev_heading, -PI, PI)
 	_prev_heading = r_hdg
+	if _is_sunk:
+		_roll_amount = lerpf(_roll_amount, 3.4, minf(1.0, delta * 6.0))
+		_apply_stack_transforms(4.5, just_entered)
+		_update_wake_and_foam(delta)
+		_update_muzzle_flashes(delta)
+		_idle_redraw_accum += delta
+		if _idle_redraw_accum >= 0.12 or just_entered or not _muzzle_flashes.is_empty():
+			_idle_redraw_accum = 0.0
+			queue_redraw()
+		return
+
 	var target_roll: float = clampf(turn_delta * 18.0, -1.8, 1.8) + sin(_time_accum * 2.1 + _bob_phase) * 0.65
 	_roll_amount = lerpf(_roll_amount, target_roll, minf(1.0, delta * 8.0))
 
@@ -416,28 +478,33 @@ func _apply_stack_transforms(bob_y: float, force_all: bool = false) -> void:
 	var r_hdg: float = _render_heading()
 	var perp := Vector2(-sin(r_hdg), cos(r_hdg))
 	var sail_scale_x: float = 1.0
-	if _sail_state == Contracts.SailState.ANCHORED:
+	if _is_sunk:
+		sail_scale_x = 0.28
+	elif _sail_state == Contracts.SailState.ANCHORED:
 		sail_scale_x = 0.48
 	elif _sail_state == Contracts.SailState.HALF_SAIL:
 		sail_scale_x = 0.78
 	elif _sail_state == Contracts.SailState.FULL_SAIL:
 		sail_scale_x = 1.06
 
-	var is_flashing: bool = _hit_flash_timer > 0.0
-	var update_flash: bool = force_all or (is_flashing != _last_applied_flash)
-	var update_sail_scale: bool = force_all or (_sail_state != _last_applied_sail_state)
-	var flash_tint: Color = FLASH_TINT if is_flashing else Color.WHITE
+	var is_flashing: bool = (not _is_sunk) and (_hit_flash_timer > 0.0)
+	var update_tint: bool = force_all or (is_flashing != _last_applied_flash) or (_is_sunk != _last_applied_sunk)
+	var update_sail_scale: bool = force_all or (_sail_state != _last_applied_sail_state) or (_is_sunk != _last_applied_sunk)
+	var eff_tint: Color = SUNK_TINT if _is_sunk else (FLASH_TINT if is_flashing else Color.WHITE)
+	var eff_y_step: float = LAYER_Y_STEP * (0.65 if _is_sunk else 1.0)
+	var eff_roll: float = 3.4 if _is_sunk else _roll_amount
 
 	var total_layers: int = _layer_sprites.size()
 	var denom: float = float(maxi(1, total_layers - 1))
 	for i in range(total_layers):
 		var spr: Sprite2D = _layer_sprites[i]
 		var height_frac: float = float(i) / denom
-		var roll_shift: Vector2 = perp * (_roll_amount * height_frac * 0.85)
+		var roll_shift: Vector2 = perp * (eff_roll * height_frac * 0.85)
 		spr.rotation = r_hdg
-		spr.position = Vector2(roll_shift.x, float(i) * LAYER_Y_STEP + bob_y + roll_shift.y).round()
-		if update_flash:
-			spr.modulate = flash_tint
+		spr.position = Vector2(roll_shift.x, float(i) * eff_y_step + bob_y + roll_shift.y).round()
+		if update_tint:
+			spr.modulate = eff_tint
+			spr.visible = not (_is_sunk and i >= total_layers - 2)
 		if update_sail_scale:
 			if i >= _sail_layer_range.x and i <= _sail_layer_range.y:
 				spr.scale = Vector2(LAYER_SCALE * sail_scale_x, LAYER_SCALE)
@@ -452,25 +519,34 @@ func _apply_stack_transforms(bob_y: float, force_all: bool = false) -> void:
 		var local_off: Vector2 = entry["local_offset"]
 		var stack_layer: float = float(entry["stack_layer"])
 		var height_frac: float = stack_layer / mod_denom
-		var roll_shift: Vector2 = perp * (_roll_amount * height_frac * 0.85)
+		var roll_shift: Vector2 = perp * (eff_roll * height_frac * 0.85)
 		var world_off: Vector2 = local_off.rotated(r_hdg)
 		mspr.position = Vector2(
 			world_off.x + roll_shift.x,
-			world_off.y + stack_layer * LAYER_Y_STEP + bob_y + roll_shift.y
+			world_off.y + stack_layer * eff_y_step + bob_y + roll_shift.y
 		).round()
 		mspr.rotation = r_hdg + float(entry["local_rot"])
-		if update_flash:
-			mspr.modulate = flash_tint
+		if update_tint:
+			mspr.modulate = eff_tint
 
 	_last_applied_flash = is_flashing
+	_last_applied_sunk = _is_sunk
 	_last_applied_sail_state = _sail_state
 
 
 func _hull_size_factor() -> float:
-	return [0.90, 1.10, 1.32][clampi(hull_tier, 0, 2)]
+	return [0.88, 0.98, 1.10, 1.24, 1.06, 1.48][clampi(hull_tier, 0, 5)]
 
 
 func _update_wake_and_foam(delta: float) -> void:
+	if _is_sunk:
+		_foam_dots.clear()
+		if not _wake_world_points.is_empty():
+			_wake_world_points.clear()
+		if _wake_line != null and _wake_line.get_point_count() > 0:
+			_wake_local_pts.resize(0)
+			_wake_line.points = _wake_local_pts
+		return
 	var scale_f: float = _hull_size_factor()
 	var r_hdg: float = _render_heading()
 	var r_pos: Vector2 = get_smooth_world_pos()
@@ -555,41 +631,42 @@ func _draw() -> void:
 	var forward := Vector2(cos(r_hdg), sin(r_hdg))
 	var perp := Vector2(-forward.y, forward.x)
 
-	# 1. Animated Layer 0 waterline pixel foam ring
-	var ring_steps: int = 22
-	var pulse: float = 0.75 + 0.25 * sin(_time_accum * 3.2 + _bob_phase)
-	var ring_col := Color(0.92, 0.98, 0.99, 0.45 * pulse)
-	var phase_step: int = int(_time_accum * 4.0)
+	# 1. Animated Layer 0 waterline pixel foam ring (suppressed when sunk)
 	var rx: float = 22.0 * scale_f
 	var ry: float = 9.0 * scale_f
-	for i in range(ring_steps):
-		if (i + phase_step) % 2 != 0:
-			continue
-		var t: float = (float(i) / float(ring_steps)) * TAU
-		var pt: Vector2 = (forward * (cos(t) * rx) + perp * (sin(t) * ry)).round()
-		draw_rect(Rect2(pt, PIXEL_2X2), ring_col)
+	if not _is_sunk:
+		var ring_steps: int = 22
+		var pulse: float = 0.75 + 0.25 * sin(_time_accum * 3.2 + _bob_phase)
+		var ring_col := Color(0.92, 0.98, 0.99, 0.45 * pulse)
+		var phase_step: int = int(_time_accum * 4.0)
+		for i in range(ring_steps):
+			if (i + phase_step) % 2 != 0:
+				continue
+			var t: float = (float(i) / float(ring_steps)) * TAU
+			var pt: Vector2 = (forward * (cos(t) * rx) + perp * (sin(t) * ry)).round()
+			draw_rect(Rect2(pt, PIXEL_2X2), ring_col)
 
-	# 2. Crisp V-shaped bow wave when sailing
-	if _speed > 6.0:
-		var speed_ratio: float = clampf(_speed / 95.0, 0.2, 1.2)
-		var bow_tip: Vector2 = forward * rx
-		var back_v: Vector2 = bow_tip - forward * (9.0 * speed_ratio)
-		var wing_v: Vector2 = perp * (7.5 * speed_ratio * scale_f)
-		draw_line(bow_tip.round(), (back_v - wing_v).round(), BOW_WAVE_COL, 1.5, false)
-		draw_line(bow_tip.round(), (back_v + wing_v).round(), BOW_WAVE_COL, 1.5, false)
+		# 2. Crisp V-shaped bow wave when sailing
+		if _speed > 6.0:
+			var speed_ratio: float = clampf(_speed / 95.0, 0.2, 1.2)
+			var bow_tip: Vector2 = forward * rx
+			var back_v: Vector2 = bow_tip - forward * (9.0 * speed_ratio)
+			var wing_v: Vector2 = perp * (7.5 * speed_ratio * scale_f)
+			draw_line(bow_tip.round(), (back_v - wing_v).round(), BOW_WAVE_COL, 1.5, false)
+			draw_line(bow_tip.round(), (back_v + wing_v).round(), BOW_WAVE_COL, 1.5, false)
 
-	# 3. Pixel foam dots in wake
-	for dot in _foam_dots:
-		var alpha: float = 1.0 - float(dot["age"]) / float(dot["max_age"])
-		var local_p: Vector2 = ((dot["world_pos"] as Vector2) - position).round()
-		var sz: float = float(dot["size"])
-		draw_rect(Rect2(local_p, Vector2(sz, sz)), Color(0.93, 0.98, 1.0, alpha * 0.75))
+		# 3. Pixel foam dots in wake
+		for dot in _foam_dots:
+			var alpha: float = 1.0 - float(dot["age"]) / float(dot["max_age"])
+			var local_p: Vector2 = ((dot["world_pos"] as Vector2) - position).round()
+			var sz: float = float(dot["size"])
+			draw_rect(Rect2(local_p, Vector2(sz, sz)), Color(0.93, 0.98, 1.0, alpha * 0.75))
 
 	# 4. Muzzle flashes & smoke puffs on deck layer
 	for mf in _muzzle_flashes:
 		var t: float = float(mf["age"]) / float(mf["duration"])
 		var local_p: Vector2 = (mf["local_pos"] as Vector2).rotated(r_hdg) + Vector2(0.0, -7.0)
-		var out_dir: Vector2 = perp * float(mf["side_sign"])
+		var out_dir: Vector2 = forward if bool(mf.get("is_bow", false)) else perp * float(mf["side_sign"])
 		if t < 0.45:
 			var flash_pos: Vector2 = (local_p + out_dir * (t * 10.0)).round()
 			draw_rect(Rect2(flash_pos - Vector2(3, 3), Vector2(6, 6)), MUZZLE_OUTER_COL)
@@ -601,9 +678,9 @@ func _draw() -> void:
 			Color(0.86, 0.86, 0.88, (1.0 - t) * 0.72)
 		)
 
-	# 5. Crisp pixel HP bar above ship when damaged or enemy/NPC
-	if _hp < _max_hp or faction != Contracts.ShipFaction.PLAYER:
-		var bar_w: float = 30.0 if hull_tier == 0 else (34.0 if hull_tier == 1 else 38.0)
+	# 5. Crisp pixel HP bar above ship when damaged or enemy/NPC (hidden when sunk)
+	if not _is_sunk and (_hp < _max_hp or faction != Contracts.ShipFaction.PLAYER):
+		var bar_w: float = [28.0, 31.0, 34.0, 38.0, 33.0, 46.0][clampi(hull_tier, 0, 5)]
 		var bar_h: float = 3.0
 		var bar_pos := Vector2(-bar_w * 0.5, -24.0).round()
 		var ratio: float = clampf(_hp / _max_hp, 0.0, 1.0)
@@ -620,7 +697,7 @@ func _draw() -> void:
 func _update_nameplate() -> void:
 	if _name_label == null:
 		return
-	var should_show: bool = not ship_name.is_empty()
+	var should_show: bool = (not ship_name.is_empty()) and (not _is_sunk)
 	if not should_show:
 		if _cached_name_visible:
 			_name_label.visible = false

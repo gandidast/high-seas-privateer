@@ -1,6 +1,6 @@
 extends RefCounted
-## Generates 2D pixel-art sprite-stack ship layers (64x32) for 3 ship classes
-## (Sloop, Brigantine, Frigate) across all factions.
+## Generates 2D pixel-art sprite-stack ship layers (64x32) for all 6 ship classes
+## (Sloop, Schooner, Brigantine, Frigate, Corsair Clipper, War Galleon) across all factions.
 
 const Draw = preload("res://visual/baker/pixel_draw_utils.gd")
 
@@ -8,9 +8,48 @@ const SHIP_TEX_WIDTH: int = 64
 const SHIP_TEX_HEIGHT: int = 32
 
 const HULL_SPECS: Dictionary = {
-	0: { "tier": 0, "x_min": 14, "x_max": 49, "max_hw": 6.4, "stern_end": 22, "fore_start": 41, "masts": [31], "yard_halfs": [8], "sail_halfs": [7], "gunport_xs": [25, 32, 39], "bowsprit_len": 6 },
-	1: { "tier": 1, "x_min": 9, "x_max": 53, "max_hw": 8.0, "stern_end": 20, "fore_start": 43, "masts": [26, 41], "yard_halfs": [9, 7], "sail_halfs": [8, 6], "gunport_xs": [22, 29, 36, 43], "bowsprit_len": 7 },
-	2: { "tier": 2, "x_min": 5, "x_max": 57, "max_hw": 9.8, "stern_end": 18, "fore_start": 45, "masts": [18, 32, 46], "yard_halfs": [7, 11, 8], "sail_halfs": [6, 10, 7], "gunport_xs": [19, 25, 31, 37, 43, 49], "bowsprit_len": 5 }
+	# 0: Sloop ("Schaluppe") — compact 1-mast sloop
+	0: {
+		"tier": 0, "x_min": 15, "x_max": 48, "max_hw": 6.2,
+		"stern_end": 23, "fore_start": 40,
+		"masts": [31], "yard_halfs": [8], "sail_halfs": [7],
+		"gunport_xs": [26, 32, 38], "bowsprit_len": 5, "raked": false
+	},
+	# 1: Schooner ("Schoner") — sleek 2-mast schooner (longer than sloop, narrower than brig)
+	1: {
+		"tier": 1, "x_min": 10, "x_max": 53, "max_hw": 6.8,
+		"stern_end": 19, "fore_start": 44,
+		"masts": [25, 40], "yard_halfs": [8, 7], "sail_halfs": [7, 6],
+		"gunport_xs": [22, 29, 36, 43], "bowsprit_len": 7, "raked": false
+	},
+	# 2: Brigantine ("Brigg") — stout 2-mast brig
+	2: {
+		"tier": 2, "x_min": 9, "x_max": 53, "max_hw": 8.4,
+		"stern_end": 20, "fore_start": 43,
+		"masts": [25, 41], "yard_halfs": [10, 8], "sail_halfs": [9, 7],
+		"gunport_xs": [21, 28, 35, 42], "bowsprit_len": 6, "raked": false
+	},
+	# 3: Frigate ("Fregatte") — classic 3-mast warship
+	3: {
+		"tier": 3, "x_min": 6, "x_max": 56, "max_hw": 9.8,
+		"stern_end": 18, "fore_start": 45,
+		"masts": [18, 31, 45], "yard_halfs": [7, 11, 8], "sail_halfs": [6, 10, 7],
+		"gunport_xs": [19, 25, 31, 37, 43, 49], "bowsprit_len": 5, "raked": false
+	},
+	# 4: Corsair Clipper ("Kaper-Klipper") — razor-sleek narrow fast interceptor with 2 raked sails + sharp bowsprit
+	4: {
+		"tier": 4, "x_min": 7, "x_max": 54, "max_hw": 6.4,
+		"stern_end": 16, "fore_start": 46,
+		"masts": [23, 39], "yard_halfs": [9, 8], "sail_halfs": [8, 7],
+		"gunport_xs": [21, 28, 35, 42], "bowsprit_len": 8, "raked": true
+	},
+	# 5: War Galleon ("Kriegsgaleone") — massive wide dreadnought hull filling 64x32
+	5: {
+		"tier": 5, "x_min": 2, "x_max": 61, "max_hw": 12.0,
+		"stern_end": 18, "fore_start": 45,
+		"masts": [16, 32, 47], "yard_halfs": [9, 13, 10], "sail_halfs": [8, 12, 9],
+		"gunport_xs": [15, 20, 25, 30, 35, 40, 45, 50, 54], "bowsprit_len": 3, "raked": false
+	}
 }
 
 const FACTION_PALETTES: Dictionary = {
@@ -74,7 +113,7 @@ static func get_sail_layer_range(layer_count: int = 24) -> Vector2i:
 
 static func bake_ship_layers(faction: int = 0, layer_count: int = 20, hull_tier: int = 0) -> Array[ImageTexture]:
 	var safe_layers: int = maxi(12, layer_count)
-	var safe_tier: int = clampi(hull_tier, 0, 2)
+	var safe_tier: int = clampi(hull_tier, 0, 5)
 	var safe_faction: int = normalize_faction(faction)
 
 	var layers: Array[ImageTexture] = []
@@ -141,7 +180,16 @@ static func _hull_half_width_spec(x: int, spec: Dictionary) -> float:
 		return 0.0
 	var t: float = float(x - x_min) / float(maxi(1, x_max - x_min))
 	var max_hw: float = float(spec["max_hw"])
-	var curve: float = sin(pow(t, 0.72) * PI * 0.85 + 0.44)
+	var tier: int = int(spec["tier"])
+	var curve: float
+	if tier == 4:
+		# Razor-sleek Corsair Clipper: sharp bow & stern taper
+		curve = sin(pow(t, 0.78) * PI * 0.88 + 0.34)
+	elif tier == 5:
+		# Massive War Galleon: broad dreadnought beam with heavy castles
+		curve = sin(pow(t, 0.65) * PI * 0.82 + 0.50)
+	else:
+		curve = sin(pow(t, 0.72) * PI * 0.85 + 0.44)
 	return clampf(curve * max_hw, 0.7, max_hw)
 
 
@@ -161,7 +209,7 @@ static func _draw_keel_and_lower_hull(img: Image, k_frac: float, spec: Dictionar
 				var c: Color = hull_mid if k_frac >= 0.45 else hull_dark
 				if float(y) < cy - hw * 0.35 and k_frac >= 0.45:
 					c = hull_lit
-				img.set_pixel(x, y, c)
+				Draw.px(img, x, y, c)
 
 
 static func _draw_lower_bulwark(img: Image, step: int, steps: int, spec: Dictionary, colors: Dictionary) -> void:
@@ -171,6 +219,8 @@ static func _draw_lower_bulwark(img: Image, step: int, steps: int, spec: Diction
 	var hull_lit := Color(0.761, 0.510, 0.333, 1.0)
 	var trim_col: Color = colors["trim"]
 	var tier: int = int(spec["tier"])
+	var has_double_deck: bool = (tier == 3 or tier == 5)
+	var has_gilded_trim: bool = (tier >= 3)
 	var gunport_xs: Array = spec["gunport_xs"]
 	var cy: float = float(SHIP_TEX_HEIGHT) * 0.5 - 0.5
 
@@ -185,14 +235,16 @@ static func _draw_lower_bulwark(img: Image, step: int, steps: int, spec: Diction
 			var c: Color = hull_side if float(y) < cy else hull_side_dark
 			if dy > hw - 1.3 and float(y) < cy:
 				c = hull_lit
-			if (step == steps or (tier == 2 and step == 1)) and dy > hw - 1.5:
-				if tier == 2 and step == steps and (x % 3 == 0):
+			if (step == steps or (has_double_deck and step == 1)) and dy > hw - 1.5:
+				if has_gilded_trim and step == steps and (x % 3 == 0 or tier == 5 and x % 2 == 0):
 					c = trim_col
 				for gx_var in gunport_xs:
-					if x == int(gx_var) and dy > hw - 1.4:
+					var gx: int = int(gx_var)
+					var hit_port: bool = (x == gx) or (tier == 5 and step == steps and x == gx + 1)
+					if hit_port and dy > hw - 1.4:
 						c = Draw.OUTLINE_COLOR
 						break
-			img.set_pixel(x, y, c)
+			Draw.px(img, x, y, c)
 
 
 static func _draw_main_deck_and_rails(img: Image, step: int, steps: int, spec: Dictionary, colors: Dictionary) -> void:
@@ -206,8 +258,8 @@ static func _draw_main_deck_and_rails(img: Image, step: int, steps: int, spec: D
 	var rail_col: Color = colors["rail"]
 
 	var tier: int = int(spec["tier"])
-	var x_min: int = int(spec["x_min"]) - 1
-	var x_max: int = int(spec["x_max"]) + 1
+	var x_min: int = maxi(1, int(spec["x_min"]) - 1)
+	var x_max: int = mini(SHIP_TEX_WIDTH - 2, int(spec["x_max"]) + 1)
 	var stern_end: int = int(spec["stern_end"])
 	var fore_start: int = int(spec["fore_start"])
 	var masts: Array = spec["masts"]
@@ -226,7 +278,7 @@ static func _draw_main_deck_and_rails(img: Image, step: int, steps: int, spec: D
 			var is_bulwark: bool = dy > hw - 1.65 or x <= x_min + 2 or x >= x_max - 3
 			if not is_deck_base and not is_bulwark:
 				var in_stern: bool = (x <= stern_end)
-				var in_fore: bool = (tier >= 1 and x >= fore_start)
+				var in_fore: bool = (tier >= 2 and tier != 4 and x >= fore_start)
 				var is_beam: bool = false
 				for mx_var in masts:
 					if abs(x - int(mx_var)) <= 1:
@@ -238,13 +290,13 @@ static func _draw_main_deck_and_rails(img: Image, step: int, steps: int, spec: D
 			if is_bulwark:
 				var bc: Color = hull_side if float(y) < cy else hull_side_dark
 				if is_top_rail:
-					if x >= x_max - 4 or x <= x_min + 2 or (tier == 2 and x % 3 == 0):
+					if x >= x_max - 4 or x <= x_min + 2 or (tier >= 3 and x % 3 == 0):
 						bc = trim_col
 					else:
-						bc = rail_col if (x % 2 == 0 or tier >= 1) else deck_light
+						bc = rail_col if (x % 2 == 0 or tier >= 2) else deck_light
 				elif float(y) < cy - hw + 1.3:
 					bc = Draw.SUNLIGHT_HIGHLIGHT
-				img.set_pixel(x, y, bc)
+				Draw.px(img, x, y, bc)
 			else:
 				var pc: Color = deck_light if ((y / 2) % 2 == 0) else deck_mid
 				if y % 3 == 0:
@@ -252,17 +304,21 @@ static func _draw_main_deck_and_rails(img: Image, step: int, steps: int, spec: D
 				var mid_x: int = (x_min + x_max) / 2 + 2
 				if step == 1 and abs(x - mid_x) <= 3 and dy <= 2.2:
 					pc = Color(0.28, 0.17, 0.14, 1.0) if (x % 2 == 0) else deck_seam
-				img.set_pixel(x, y, pc)
+				Draw.px(img, x, y, pc)
 
 	if step >= 1:
 		var b_len: int = int(spec["bowsprit_len"])
 		var b_end: int = mini(SHIP_TEX_WIDTH - 2, x_max + b_len - (steps - 1 - step))
 		for bx in range(x_max - 2, b_end + 1):
-			img.set_pixel(bx, 15, deck_light)
-			img.set_pixel(bx, 16, hull_side)
-		if tier == 2 and step == steps - 1:
-			img.set_pixel(x_max + 1, 15, trim_col)
-			img.set_pixel(x_max + 1, 16, trim_col)
+			if tier == 4 and bx >= b_end - 2:
+				# Sharp lance-like bowsprit tip for Corsair Clipper
+				Draw.px(img, bx, 15, trim_col if bx == b_end else deck_light)
+			else:
+				Draw.px(img, bx, 15, deck_light)
+				Draw.px(img, bx, 16, hull_side)
+		if tier >= 3 and step == steps - 1:
+			Draw.px(img, x_max + 1, 15, trim_col)
+			Draw.px(img, x_max + 1, 16, trim_col)
 
 
 static func _draw_cabin_and_castles(img: Image, step: int, steps: int, spec: Dictionary, colors: Dictionary) -> void:
@@ -280,51 +336,54 @@ static func _draw_cabin_and_castles(img: Image, step: int, steps: int, spec: Dic
 	var x_max: int = int(spec["x_max"])
 	var cy: float = float(SHIP_TEX_HEIGHT) * 0.5 - 0.5
 	var is_roof: bool = (step >= steps - 1)
+	var rich_trim: bool = (tier >= 3)
 
 	var cab_start: int = x_min + 1
-	var cab_end: int = stern_end - (1 if step > 0 else 0)
+	var cab_end: int = stern_end - (1 if step > 0 and tier != 5 else 0)
 	for x in range(cab_start, cab_end + 1):
-		var hw: float = _hull_half_width_spec(x, spec) * (0.98 - float(step) * 0.06)
+		var hw: float = _hull_half_width_spec(x, spec) * (0.98 - float(step) * 0.055)
 		for y in range(2, SHIP_TEX_HEIGHT - 2):
 			var dy: float = absf(float(y) - cy)
 			if dy > hw:
 				continue
 			if step == 0:
 				if dy > hw - 1.3 or x == cab_start or x == cab_end:
-					img.set_pixel(x, y, trim_col if tier == 2 else rail_col)
+					Draw.px(img, x, y, trim_col if rich_trim else rail_col)
 				else:
-					img.set_pixel(x, y, wood_light if ((y / 2) % 2 == 0) else wood_mid)
+					Draw.px(img, x, y, wood_light if ((y / 2) % 2 == 0) else wood_mid)
 			elif not is_roof:
 				if x >= cab_start + 1 and x <= cab_end - 1 and dy <= hw - 1.1:
 					var c: Color = wood_dark if (x == cab_start + 1 or x == cab_end - 1) else wood_mid
-					if x == cab_start + 1 and (int(dy) == 2 or int(dy) == 3):
+					if x == cab_start + 1 and (int(dy) == 2 or int(dy) == 3 or (tier == 5 and int(dy) == 5)):
 						c = lantern
-					img.set_pixel(x, y, c)
+					Draw.px(img, x, y, c)
 			elif x >= cab_start + 2 and x <= cab_end - 2 and dy <= hw - 1.6:
-				img.set_pixel(x, y, trim_col if (x == cab_start + 2 or dy > hw - 2.5) else wood_light)
+				Draw.px(img, x, y, trim_col if (x == cab_start + 2 or dy > hw - 2.5) else wood_light)
 
-	if tier >= 1 and step <= 1:
+	# Forecastle: Schooner gets low rail, Brig/Frigate medium castle, War Galleon tall grand forecastle
+	var fore_max_step: int = 2 if tier == 5 else (1 if tier >= 2 else (0 if tier == 1 else -1))
+	if step <= fore_max_step:
 		for x in range(fore_start, x_max):
-			var hw: float = _hull_half_width_spec(x, spec) * 0.96
+			var hw: float = _hull_half_width_spec(x, spec) * (0.96 - float(step) * 0.04)
 			for y in range(2, SHIP_TEX_HEIGHT - 2):
 				var dy: float = absf(float(y) - cy)
 				if dy <= hw:
 					if dy > hw - 1.3 or x == fore_start or x >= x_max - 2:
-						img.set_pixel(x, y, trim_col if tier == 2 else rail_col)
-					elif tier == 2 and step == 0:
-						img.set_pixel(x, y, wood_mid)
+						Draw.px(img, x, y, trim_col if rich_trim else rail_col)
+					elif (tier >= 3 and step <= 1) or tier == 5:
+						Draw.px(img, x, y, wood_light if step == 2 else wood_mid)
 
 	if step == 1:
 		var wx: int = cab_end + 1
 		for wy in range(14, 18):
-			img.set_pixel(wx, wy, trim_col if (wy == 14 or wy == 17) else wood_dark)
+			Draw.px(img, wx, wy, trim_col if (wy == 14 or wy == 17) else wood_dark)
 
 	for mx_var in spec["masts"]:
 		var mx: int = int(mx_var)
 		for dy in [-1, 0, 1]:
 			for dx in [0, 1]:
 				if abs(dx) + abs(dy) <= 1:
-					img.set_pixel(mx + dx, 15 + dy, wood_light if dy < 0 else wood_dark)
+					Draw.px(img, mx + dx, 15 + dy, wood_light if dy < 0 else wood_dark)
 
 
 static func _draw_masts_and_sails_tiered(
@@ -345,62 +404,69 @@ static func _draw_masts_and_sails_tiered(
 	var yard_halfs: Array = spec["yard_halfs"]
 	var sail_halfs: Array = spec["sail_halfs"]
 	var tier: int = int(spec["tier"])
+	var is_raked: bool = bool(spec.get("raked", false))
 	var main_mast_idx: int = 1 if masts.size() >= 2 else 0
 	var main_mx: int = int(masts[main_mast_idx])
 
 	for mx_var in masts:
 		var mx: int = int(mx_var)
-		img.set_pixel(mx, 15, mast_hi)
-		img.set_pixel(mx, 16, mast_col)
+		Draw.px(img, mx, 15, mast_hi)
+		Draw.px(img, mx, 16, mast_col)
 
 	if layer_idx == yard_layer:
 		for m_i in range(masts.size()):
 			var mx: int = int(masts[m_i])
 			var yh: int = int(yard_halfs[m_i])
 			for y in range(16 - yh, 16 + yh):
-				img.set_pixel(mx, y, mast_hi if y < 16 else mast_col)
+				Draw.px(img, mx, y, mast_hi if y < 16 else mast_col)
 		return
 
 	if layer_idx >= sail_start and layer_idx <= sail_end:
 		var sail_prog: float = float(layer_idx - sail_start) / float(maxi(1, sail_end - sail_start))
 		var taper: int = 2 if sail_prog > 0.68 else 0
+		var rake_shift: int = -int(round(sail_prog * 2.0)) if is_raked else 0
 		var sail_mid: int = (sail_start + sail_end) / 2
 		for m_i in range(masts.size()):
 			var mx: int = int(masts[m_i])
 			var sh: int = maxi(3, int(sail_halfs[m_i]) - taper)
 			for y in range(16 - sh, 16 + sh):
 				var dist_center: float = absf(float(y) - 15.5) / float(sh)
-				var bulge: int = 3 if (dist_center < 0.45 and tier >= 1) else (2 if dist_center < 0.65 else 1)
-				var sx: int = mx + bulge
+				var bulge: int = 3 if (dist_center < 0.45 and tier >= 2) else (2 if dist_center < 0.65 else 1)
+				var sx: int = mx + bulge + rake_shift
 				var sc: Color = _pick_clean_sail_band(y, sail_prog, faction, colors["sail_a"], colors["sail_b"], colors["sail_c"])
-				img.set_pixel(sx, y, sc)
-				img.set_pixel(sx - 1, y, sc.darkened(0.10))
+				Draw.px(img, sx, y, sc)
+				Draw.px(img, sx - 1, y, sc.darkened(0.10))
 
 			if faction == Contracts.ShipFaction.PIRATE and m_i == main_mast_idx and abs(layer_idx - sail_mid) <= 1:
-				var skull_x: int = mx + (3 if tier >= 1 else 2)
+				var skull_x: int = mx + (3 if tier >= 2 else 2) + rake_shift
 				for sy in range(14, 18):
 					var is_eye: bool = (layer_idx == sail_mid and (sy == 15 or sy == 16))
-					img.set_pixel(skull_x, sy, Draw.OUTLINE_COLOR if is_eye else colors["flag_emblem"])
+					Draw.px(img, skull_x, sy, Draw.OUTLINE_COLOR if is_eye else colors["flag_emblem"])
 
-		if tier == 2 and (faction == Contracts.ShipFaction.NAVY or faction == Contracts.ShipFaction.MERCHANT):
+		if (tier == 3 or tier == 5) and (faction == Contracts.ShipFaction.NAVY or faction == Contracts.ShipFaction.MERCHANT or tier == 5):
 			var main_sh: int = maxi(3, int(sail_halfs[main_mast_idx]) - taper)
-			img.set_pixel(main_mx + 1, 16 - main_sh, colors["trim"])
-			img.set_pixel(main_mx + 1, 16 + main_sh - 1, colors["trim"])
+			Draw.px(img, main_mx + 1 + rake_shift, 16 - main_sh, colors["trim"])
+			Draw.px(img, main_mx + 1 + rake_shift, 16 + main_sh - 1, colors["trim"])
 		return
 
 	if layer_idx == crow_nest_layer:
+		var nest_offset: int = -1 if is_raked else 0
 		for mx_var in masts:
-			var mx: int = int(mx_var)
+			var mx: int = int(mx_var) + nest_offset
 			for dy in [-1, 0, 1]:
 				for dx in [-1, 0, 1]:
-					img.set_pixel(mx + dx, 15 + dy, mast_hi if dy < 0 else mast_col)
+					Draw.px(img, mx + dx, 15 + dy, mast_hi if dy < 0 else mast_col)
+		if tier == 5:
+			for dy in [-2, 2]:
+				Draw.px(img, main_mx, 15 + dy, colors["trim"])
 	elif layer_idx == flag_layer:
-		var flag_len: int = 6 + tier * 2
-		for fx in range(main_mx - flag_len, main_mx):
-			var wave_y: int = 15 + (1 if ((fx - main_mx) % 3 == 0) else 0)
-			img.set_pixel(fx, wave_y, colors["flag_emblem"] if fx == main_mx - 3 else colors["flag"])
-			if fx >= main_mx - 4:
-				img.set_pixel(fx, wave_y + 1, colors["flag"])
+		var flag_len: int = mini(14, 5 + tier * 2)
+		var flag_anchor: int = main_mx - (1 if is_raked else 0)
+		for fx in range(flag_anchor - flag_len, flag_anchor):
+			var wave_y: int = 15 + (1 if ((fx - flag_anchor) % 3 == 0) else 0)
+			Draw.px(img, fx, wave_y, colors["flag_emblem"] if fx == flag_anchor - 3 else colors["flag"])
+			if fx >= flag_anchor - 4:
+				Draw.px(img, fx, wave_y + 1, colors["flag"])
 
 
 static func _pick_clean_sail_band(y: int, sail_prog: float, faction: int, a: Color, b: Color, c: Color) -> Color:

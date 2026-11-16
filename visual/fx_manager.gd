@@ -37,6 +37,12 @@ var _aim_dir: Vector2 = Vector2.RIGHT
 var _aim_range: float = 240.0
 var _aim_half_angle: float = 0.35
 var _cone_poly := PackedVector2Array()
+var _bow_cone_active: bool = false
+var _bow_origin: Vector2 = Vector2.ZERO
+var _bow_dir: Vector2 = Vector2.RIGHT
+var _bow_range: float = 300.0
+var _bow_half_angle: float = 0.14
+var _bow_poly := PackedVector2Array()
 var _cam_rect: Rect2 = Rect2()
 var _has_cam_rect: bool = false
 var _had_visible_fx: bool = false
@@ -69,6 +75,15 @@ func set_broadside_aim_cone(origin: Vector2, dir: Vector2, range_px: float, half
 	_aim_dir = dir.normalized() if dir.length_squared() > 0.0001 else Vector2.RIGHT
 	_aim_range = maxf(24.0, range_px)
 	_aim_half_angle = clampf(half_angle_rad, 0.05, 1.45)
+	queue_redraw()
+
+
+func set_bow_aim_cone(origin: Vector2, dir: Vector2, range_px: float, half_angle_rad: float, active: bool) -> void:
+	_bow_cone_active = active
+	_bow_origin = origin
+	_bow_dir = dir.normalized() if dir.length_squared() > 0.0001 else Vector2.RIGHT
+	_bow_range = maxf(24.0, range_px)
+	_bow_half_angle = clampf(half_angle_rad, 0.03, 0.85)
 	queue_redraw()
 
 func _refresh_camera_rect() -> void:
@@ -127,7 +142,7 @@ func _process(delta: float) -> void:
 	_tick_aged(_lightning_bolts, delta)
 
 	var has_fx: bool = (
-		_aim_cone_active or not _projectiles.is_empty() or not _particles.is_empty()
+		_aim_cone_active or _bow_cone_active or not _projectiles.is_empty() or not _particles.is_empty()
 		or not _rings.is_empty() or not _harpoon_tethers.is_empty() or not _lightning_bolts.is_empty()
 		or has_visible_loot or _entities_renderer.has_visible_entities(_cam_rect, _has_cam_rect)
 	)
@@ -248,6 +263,8 @@ func _update_harpoon_tethers(delta: float) -> void:
 func _draw() -> void:
 	if _aim_cone_active:
 		_draw_broadside_cone()
+	if _bow_cone_active:
+		_draw_bow_cone()
 	_draw_rings_and_loot()
 	_entities_renderer.draw_entities(self, _cam_rect, _has_cam_rect)
 	_draw_tethers_and_projectiles()
@@ -353,22 +370,27 @@ func _draw_particles_and_bolts() -> void:
 			draw_line(segs[i], segs[i + 1], inner_col, 1.5, false)
 
 func _draw_broadside_cone() -> void:
-	var base_ang: float = _aim_dir.angle()
-	var a0: float = base_ang - _aim_half_angle
-	var a1: float = base_ang + _aim_half_angle
-	var arc_steps: int = 14
-	_cone_poly.resize(arc_steps + 2)
-	_cone_poly[0] = _aim_origin.round()
+	_draw_aim_arc(_cone_poly, _aim_origin, _aim_dir, _aim_range, _aim_half_angle, 14, Color(0.98, 0.85, 0.42, 0.14), Color(0.98, 0.88, 0.48, 0.58), Color(1.0, 0.92, 0.62, 0.72))
+
+
+func _draw_bow_cone() -> void:
+	_draw_aim_arc(_bow_poly, _bow_origin, _bow_dir, _bow_range, _bow_half_angle, 8, Color(0.42, 0.92, 0.96, 0.12), Color(0.54, 0.94, 0.98, 0.54), Color(0.76, 0.98, 1.0, 0.68))
+
+
+func _draw_aim_arc(poly: PackedVector2Array, origin: Vector2, dir: Vector2, range_px: float, half_angle: float, arc_steps: int, fill_col: Color, edge_col: Color, arc_col: Color) -> void:
+	var base_ang: float = dir.angle()
+	var a0: float = base_ang - half_angle
+	var a1: float = base_ang + half_angle
+	poly.resize(arc_steps + 2)
+	poly[0] = origin.round()
 	for i in range(arc_steps + 1):
 		var ang: float = lerpf(a0, a1, float(i) / float(arc_steps))
-		_cone_poly[i + 1] = (_aim_origin + Vector2(cos(ang), sin(ang)) * _aim_range).round()
-	draw_colored_polygon(_cone_poly, Color(0.98, 0.85, 0.42, 0.14))
-	var edge_col := Color(0.98, 0.88, 0.48, 0.58)
-	draw_line(_cone_poly[0], _cone_poly[1], edge_col, 1.0, false)
-	draw_line(_cone_poly[0], _cone_poly[arc_steps + 1], edge_col, 1.0, false)
-	var arc_col := Color(1.0, 0.92, 0.62, 0.72)
+		poly[i + 1] = (origin + Vector2(cos(ang), sin(ang)) * range_px).round()
+	draw_colored_polygon(poly, fill_col)
+	draw_line(poly[0], poly[1], edge_col, 1.0, false)
+	draw_line(poly[0], poly[arc_steps + 1], edge_col, 1.0, false)
 	for i in range(0, arc_steps, 2):
-		draw_line(_cone_poly[i + 1], _cone_poly[i + 2], arc_col, 1.5, false)
+		draw_line(poly[i + 1], poly[i + 2], arc_col, 1.5, false)
 
 func _on_broadside_fired(_ship_id: int, _is_starboard: bool, origin: Vector2, dir: Vector2, _cannons: Array) -> void:
 	if _is_near_camera(origin, 160.0):
@@ -385,9 +407,16 @@ func _on_cannonball_spawned(shot_data: Dictionary) -> void:
 		vel = (shot_data.get("dir", Vector2.RIGHT) as Vector2).normalized() * float(shot_data.get("speed", 220.0))
 	var max_range: float = float(shot_data.get("max_range", shot_data.get("range", 260.0)))
 	var item_id_str: String = str(shot_data.get("item_id", ""))
-	var is_fire: bool = bool(shot_data.get("is_greek_fire", float(shot_data.get("burn_dps", 0.0)) > 0.0 or item_id_str.contains("greek_fire")))
+	var is_fire: bool = bool(shot_data.get("is_greek_fire", float(shot_data.get("burn_dps", 0.0)) > 0.0 or item_id_str.contains("greek_fire") or item_id_str.contains("pitch_mortar")))
 	var is_harpoon: bool = bool(shot_data.get("is_harpoon", float(shot_data.get("harpoon_pull", 0.0)) > 0.0 or item_id_str.contains("harpoon")))
 	var is_chain: bool = bool(shot_data.get("is_chain_shot", float(shot_data.get("chain_slow", shot_data.get("chain_shot_slow", 0.0))) > 0.0 and not is_harpoon))
+	if bool(shot_data.get("is_bow", false)) and _is_near_camera(origin, 160.0):
+		var n_dir: Vector2 = vel.normalized() if vel.length_squared() > 0.0001 else Vector2.RIGHT
+		_emit_particle(origin + n_dir * 3.0, n_dir * 26.0, 6.0, 4.0, 0.0, 0.16, 4.0, Color(1.0, 0.88, 0.42, 0.95), false)
+		for _i in range(4):
+			var sd: Vector2 = n_dir.rotated(_rng.randf_range(-0.28, 0.28))
+			_emit_particle(origin + sd * _rng.randf_range(2.0, 6.0), sd * _rng.randf_range(16.0, 36.0), 6.0, _rng.randf_range(4.0, 10.0), 8.0, _rng.randf_range(0.24, 0.44), _rng.randf_range(2.5, 4.0), Color(0.92, 0.90, 0.86, 0.82), false)
+		_trigger_camera_trauma_if_near(origin, 0.12, 380.0)
 	_entities_renderer.notify_cannonball_origin(origin, vel)
 	_projectiles.append({
 		"id": int(shot_data.get("id", shot_data.get("shot_id", -1))), "shooter_id": int(shot_data.get("shooter_id", shot_data.get("owner_id", -1))),
