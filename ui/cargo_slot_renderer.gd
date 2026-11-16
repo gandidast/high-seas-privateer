@@ -8,8 +8,22 @@ const PANEL_SIZE: Vector2 = Vector2(1040.0, 580.0)
 const STASH_RECT_REL: Rect2 = Rect2(512.0, 56.0, 260.0, 488.0)
 const STATS_RECT_REL: Rect2 = Rect2(784.0, 56.0, 242.0, 508.0)
 const CLOSE_BTN_REL: Rect2 = Rect2(996.0, 10.0, 32.0, 32.0)
+const SORT_BTN_REL: Rect2 = Rect2(648.0, 62.0, 116.0, 22.0)
 const STASH_ROW_HEIGHT: float = 60.0
+const STASH_GROUP_HEADER_HEIGHT: float = 24.0
 const STASH_HEADER_HEIGHT: float = 34.0
+
+const STASH_SORT_RARITY_DESC: int = 0
+const STASH_SORT_RARITY_ASC: int = 1
+const STASH_SORT_VALUE_DESC: int = 2
+
+const STASH_GROUPS: Array[Dictionary] = [
+	{ "id": 0, "label": "WAFFEN", "color": Color(0.96, 0.56, 0.44) },
+	{ "id": 1, "label": "SEGEL", "color": Color(0.38, 0.86, 0.84) },
+	{ "id": 2, "label": "RUMPF", "color": Color(0.68, 0.78, 0.92) },
+	{ "id": 3, "label": "CREW & PULVER", "color": Color(0.96, 0.80, 0.34) },
+	{ "id": 4, "label": "BEUTE & FRACHT", "color": Color(0.84, 0.74, 0.52) }
+]
 
 const COL_VALID: Color = Color(0.22, 0.82, 0.45, 0.30)
 const COL_INVALID: Color = Color(0.90, 0.25, 0.28, 0.34)
@@ -247,6 +261,140 @@ func _draw_legend_chip(canvas: CanvasItem, pos: Vector2, slot_type: int, label: 
 	UIThemeHelper.draw_sharp_text(canvas, font, pos + Vector2(21.0, 13.0), label, 14, UIThemeHelper.COL_IVORY)
 
 
+static func get_stash_group_index(category: int) -> int:
+	match category:
+		Contracts.ItemCategory.CANNON, Contracts.ItemCategory.BOW_WEAPON:
+			return 0
+		Contracts.ItemCategory.SAIL:
+			return 1
+		Contracts.ItemCategory.HULL:
+			return 2
+		Contracts.ItemCategory.POWDER_BARREL, Contracts.ItemCategory.CREW_MOD:
+			return 3
+		_:
+			return 4
+
+
+static func get_item_quality_score(item: Contracts.GridItemData) -> int:
+	if item == null:
+		return 0
+	var affix_rank: int = 1
+	match item.affix:
+		Contracts.ItemAffix.RUSTED:
+			affix_rank = 0
+		Contracts.ItemAffix.STANDARD:
+			affix_rank = 1
+		Contracts.ItemAffix.MASTERWORK:
+			affix_rank = 2
+		Contracts.ItemAffix.CURSED:
+			affix_rank = 3
+	return item.rarity * 10 + affix_rank
+
+
+static func get_rarity_short_label(item: Contracts.GridItemData) -> String:
+	if item == null:
+		return ""
+	var r_txt: String = "Gew."
+	match item.rarity:
+		Contracts.ItemRarity.UNCOMMON:
+			r_txt = "Ungew."
+		Contracts.ItemRarity.RARE:
+			r_txt = "Selten"
+		Contracts.ItemRarity.LEGENDARY:
+			r_txt = "Legendär"
+		Contracts.ItemRarity.CURSED:
+			r_txt = "Verflucht"
+	match item.affix:
+		Contracts.ItemAffix.RUSTED:
+			return "Verrostet"
+		Contracts.ItemAffix.MASTERWORK:
+			return r_txt + " • Meist."
+		Contracts.ItemAffix.CURSED:
+			return r_txt + " • Fluch"
+		_:
+			return r_txt
+
+
+static func sort_mode_label(sort_mode: int) -> String:
+	match sort_mode:
+		STASH_SORT_RARITY_ASC:
+			return "Sort: Selten ↑"
+		STASH_SORT_VALUE_DESC:
+			return "Sort: Wert ↓"
+		_:
+			return "Sort: Selten ↓"
+
+
+static func _compare_stash_items(a: Contracts.GridItemData, b: Contracts.GridItemData, sort_mode: int) -> bool:
+	var ga: int = get_stash_group_index(a.category)
+	var gb: int = get_stash_group_index(b.category)
+	if ga != gb:
+		return ga < gb
+	if sort_mode == STASH_SORT_VALUE_DESC:
+		var va: int = a.get_effective_gold_value()
+		var vb: int = b.get_effective_gold_value()
+		if va != vb:
+			return va > vb
+	var na: String = a.name.to_lower()
+	var nb: String = b.name.to_lower()
+	if na != nb:
+		return na < nb
+	var qa: int = get_item_quality_score(a)
+	var qb: int = get_item_quality_score(b)
+	if qa != qb:
+		return (qa < qb) if sort_mode == STASH_SORT_RARITY_ASC else (qa > qb)
+	return a.get_effective_gold_value() > b.get_effective_gold_value()
+
+
+static func sort_stash_items(items: Array[Contracts.GridItemData], sort_mode: int) -> void:
+	if items.size() <= 1:
+		return
+	items.sort_custom(func(a: Contracts.GridItemData, b: Contracts.GridItemData) -> bool:
+		return _compare_stash_items(a, b, sort_mode)
+	)
+
+
+static func build_stash_display_entries(
+	dredge_grid: DredgeGrid,
+	sort_mode: int,
+	dragging_item: Contracts.GridItemData = null
+) -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	if dredge_grid == null:
+		return entries
+	var buckets: Array[Array] = [[], [], [], [], []]
+	for item_var in dredge_grid.stash_items:
+		if not (item_var is Contracts.GridItemData):
+			continue
+		var item: Contracts.GridItemData = item_var
+		if item == dragging_item:
+			continue
+		buckets[get_stash_group_index(item.category)].append(item)
+
+	for grp in STASH_GROUPS:
+		var gid: int = int(grp["id"])
+		var list: Array = buckets[gid]
+		if list.is_empty():
+			continue
+		list.sort_custom(func(a: Contracts.GridItemData, b: Contracts.GridItemData) -> bool:
+			return _compare_stash_items(a, b, sort_mode)
+		)
+		entries.append({
+			"type": "header",
+			"label": str(grp["label"]),
+			"count": list.size(),
+			"color": grp["color"],
+			"height": STASH_GROUP_HEADER_HEIGHT
+		})
+		for item in list:
+			entries.append({
+				"type": "item",
+				"item": item,
+				"height": STASH_ROW_HEIGHT
+			})
+	return entries
+
+
 func draw_stash_panel(
 	canvas: CanvasItem,
 	panel_pos: Vector2,
@@ -254,44 +402,59 @@ func draw_stash_panel(
 	dredge_grid: DredgeGrid,
 	stash_scroll: int,
 	dragging_item: Contracts.GridItemData,
-	hovered_item: Contracts.GridItemData
+	hovered_item: Contracts.GridItemData,
+	sort_mode: int = STASH_SORT_RARITY_DESC,
+	hover_sort: bool = false
 ) -> void:
 	var sr := Rect2((panel_pos + STASH_RECT_REL.position).round(), STASH_RECT_REL.size.round())
 	UIThemeHelper.draw_framed_panel(canvas, sr, UIThemeHelper.COL_PANEL_INSET, UIThemeHelper.COL_BRASS_DIM, Color(0.22, 0.18, 0.14, 0.55))
-	UIThemeHelper.draw_sharp_text(canvas, font, sr.position + Vector2(12.0, 24.0), "Gegenstände (%d)" % dredge_grid.stash_items.size(), 15, UIThemeHelper.COL_MUTED)
+	UIThemeHelper.draw_sharp_text(canvas, font, sr.position + Vector2(10.0, 23.0), "Items (%d)" % dredge_grid.stash_items.size(), 14, UIThemeHelper.COL_MUTED)
+
+	var sort_rect := Rect2((panel_pos + SORT_BTN_REL.position).round(), SORT_BTN_REL.size.round())
+	var sort_bg: Color = Color(0.28, 0.24, 0.17, 0.98) if hover_sort else Color(0.16, 0.14, 0.20, 0.96)
+	UIThemeHelper.draw_clean_box(canvas, sort_rect, sort_bg, UIThemeHelper.COL_GOLD if hover_sort else UIThemeHelper.COL_BRASS_DIM)
+	UIThemeHelper.draw_sharp_text(canvas, font, sort_rect.position + Vector2(0.0, 16.0), sort_mode_label(sort_mode), 12, UIThemeHelper.COL_GOLD if hover_sort else UIThemeHelper.COL_IVORY, HORIZONTAL_ALIGNMENT_CENTER, int(sort_rect.size.x))
 
 	var list_top: float = sr.position.y + STASH_HEADER_HEIGHT
-	var max_visible: int = int(floor((sr.size.y - STASH_HEADER_HEIGHT - 4.0) / STASH_ROW_HEIGHT))
-	if dredge_grid.stash_items.is_empty():
+	var list_bottom: float = sr.end.y - 6.0
+	var entries: Array[Dictionary] = build_stash_display_entries(dredge_grid, sort_mode, dragging_item)
+
+	if entries.is_empty():
 		UIThemeHelper.draw_sharp_text(canvas, font, Vector2(sr.position.x + 14.0, list_top + 32.0), "Leer. Ziehe Items hierher.", 14, UIThemeHelper.COL_MUTED)
 	else:
-		var drawn_row: int = 0
-		for i in range(max_visible + 1):
-			if drawn_row >= max_visible:
+		var cur_y: float = list_top
+		var start_idx: int = clampi(stash_scroll, 0, maxi(0, entries.size() - 1))
+		for idx in range(start_idx, entries.size()):
+			var entry: Dictionary = entries[idx]
+			var row_h: float = float(entry["height"])
+			if cur_y + row_h > list_bottom:
 				break
-			var idx: int = stash_scroll + i
-			if idx >= dredge_grid.stash_items.size():
-				break
-			var item: Contracts.GridItemData = dredge_grid.stash_items[idx]
-			if item == dragging_item:
-				continue
-			var row_rect := Rect2(sr.position.x + 8.0, list_top + float(drawn_row) * STASH_ROW_HEIGHT, sr.size.x - 16.0, STASH_ROW_HEIGHT - 5.0)
-			var border: Color = UIThemeHelper.affix_color(item.affix, item.rarity)
-			var is_hov: bool = (hovered_item == item)
-			UIThemeHelper.draw_clean_box(canvas, row_rect, Color(0.17, 0.16, 0.23, 0.96) if is_hov else UIThemeHelper.COL_PANEL_CARD, UIThemeHelper.COL_GOLD if is_hov else border)
+			if str(entry["type"]) == "header":
+				var hdr_rect := Rect2(sr.position.x + 8.0, cur_y + 2.0, sr.size.x - 16.0, row_h - 4.0)
+				var hcol: Color = entry["color"]
+				canvas.draw_rect(hdr_rect, Color(hcol.r, hcol.g, hcol.b, 0.11), true)
+				canvas.draw_line(Vector2(hdr_rect.position.x, hdr_rect.end.y), Vector2(hdr_rect.end.x, hdr_rect.end.y), Color(hcol.r, hcol.g, hcol.b, 0.45), 1.0)
+				UIThemeHelper.draw_sharp_text(canvas, font, hdr_rect.position + Vector2(6.0, 15.0), "%s (%d)" % [str(entry["label"]), int(entry["count"])], 13, hcol)
+			else:
+				var item: Contracts.GridItemData = entry["item"]
+				var row_rect := Rect2(sr.position.x + 8.0, cur_y, sr.size.x - 16.0, row_h - 5.0)
+				var border: Color = UIThemeHelper.affix_color(item.affix, item.rarity)
+				var is_hov: bool = (hovered_item == item)
+				UIThemeHelper.draw_clean_box(canvas, row_rect, Color(0.17, 0.16, 0.23, 0.96) if is_hov else UIThemeHelper.COL_PANEL_CARD, UIThemeHelper.COL_GOLD if is_hov else border)
 
-			var icon_box := Rect2(row_rect.position + Vector2(5.0, 4.0), Vector2(47.0, 47.0))
-			UIThemeHelper.draw_clean_box(canvas, icon_box, UIThemeHelper.COL_PANEL_INSET, Color(border.r, border.g, border.b, 0.45))
-			draw_stash_item_sprite(canvas, icon_box, item)
+				var icon_box := Rect2(row_rect.position + Vector2(5.0, 4.0), Vector2(47.0, 47.0))
+				UIThemeHelper.draw_clean_box(canvas, icon_box, UIThemeHelper.COL_PANEL_INSET, Color(border.r, border.g, border.b, 0.45))
+				draw_stash_item_sprite(canvas, icon_box, item)
 
-			var short_name: String = item.get_display_name()
-			if short_name.length() > 21:
-				short_name = short_name.substr(0, 20) + "."
-			UIThemeHelper.draw_sharp_text(canvas, font, row_rect.position + Vector2(58.0, 22.0), short_name, 14, border)
-			UIThemeHelper.draw_sharp_text(canvas, font, row_rect.position + Vector2(58.0, 43.0), "%dx%d • %d Gold" % [item.width, item.height, item.get_effective_gold_value()], 14, UIThemeHelper.COL_MUTED)
-			drawn_row += 1
+				var short_name: String = item.name
+				if short_name.length() > 21:
+					short_name = short_name.substr(0, 20) + "."
+				UIThemeHelper.draw_sharp_text(canvas, font, row_rect.position + Vector2(58.0, 21.0), short_name, 14, border)
+				var sub_txt: String = "%s • %dx%d • %dG" % [get_rarity_short_label(item), item.width, item.height, item.get_effective_gold_value()]
+				UIThemeHelper.draw_sharp_text(canvas, font, row_rect.position + Vector2(58.0, 42.0), sub_txt, 13, UIThemeHelper.COL_MUTED)
+			cur_y += row_h
 
-	UIThemeHelper.draw_sharp_text(canvas, font, Vector2(sr.position.x + 6.0, sr.position.y + sr.size.y + 22.0), "Mausrad: Stash scrollen", 14, UIThemeHelper.COL_MUTED)
+	UIThemeHelper.draw_sharp_text(canvas, font, Vector2(sr.position.x + 6.0, sr.position.y + sr.size.y + 22.0), "Mausrad: Scrollen • Klick Sort", 14, UIThemeHelper.COL_MUTED)
 
 
 func draw_stats_panel(canvas: CanvasItem, panel_pos: Vector2, font: Font, dredge_grid: DredgeGrid, ship_physics: ShipPhysics) -> void:
