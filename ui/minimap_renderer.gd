@@ -180,17 +180,14 @@ func _draw() -> void:
 
 
 func _draw_dynamic_forts_and_loot(mc: Vector2) -> void:
-	var fort_sources: Dictionary = tracked_forts
-	if combat_system_ref != null and not combat_system_ref.forts.is_empty():
-		fort_sources = tracked_forts.duplicate()
-		for fid_var in combat_system_ref.forts.keys():
-			var f: Dictionary = combat_system_ref.forts[fid_var]
-			fort_sources[int(fid_var)] = { "pos": f.get("world_pos", Vector2.ZERO), "destroyed": bool(f.get("destroyed", false)) }
-	for f_info_var in fort_sources.values():
+	var has_combat_forts: bool = combat_system_ref != null and not combat_system_ref.forts.is_empty()
+	var fort_list: Array = combat_system_ref.forts.values() if has_combat_forts else tracked_forts.values()
+	for f_info_var in fort_list:
 		var f_info: Dictionary = f_info_var
 		if bool(f_info.get("destroyed", false)):
 			continue
-		var fp: Vector2 = (mc + f_info.get("pos", Vector2.ZERO) * SCALE_F).round()
+		var pos_val: Vector2 = f_info.get("world_pos", f_info.get("pos", Vector2.ZERO))
+		var fp: Vector2 = (mc + pos_val * SCALE_F).round()
 		if MAP_RECT.has_point(fp) and _fort_tex != null:
 			draw_texture_rect(_fort_tex, Rect2((fp - Vector2(3.5, 3.5)).round(), Vector2(7.0, 7.0)), false)
 

@@ -46,6 +46,10 @@ var _last_shader_weather_int: float = -1.0
 var _last_shader_lightning_amt: float = -1.0
 var _last_shader_lightning_pos: Vector2 = Vector2(INF, INF)
 var _had_visible_drawables: bool = false
+var _redraw_accum: float = 0.0
+var _last_cull_cam: Vector2 = Vector2(INF, INF)
+var _last_cull_size: Vector2 = Vector2(-1.0, -1.0)
+var _cached_has_visible: bool = false
 
 
 func _ready() -> void:
@@ -114,7 +118,8 @@ func setup(world_seed: int = Contracts.DEFAULT_WORLD_SEED) -> void:
 	_apply_world_uniforms()
 	_rebuild_harbor_props()
 	_sync_quad_transform()
-	_update_prop_culling()
+	_last_cull_cam = Vector2(INF, INF)
+	_cached_has_visible = _update_prop_culling()
 
 
 func set_camera_center(world_pos: Vector2) -> void:
@@ -186,9 +191,20 @@ func _process(delta: float) -> void:
 
 	_sync_quad_transform()
 	_apply_weather_uniforms()
-	var has_visible: bool = _update_prop_culling()
-	if has_visible or _had_visible_drawables:
-		_had_visible_drawables = has_visible
+	var cull_moved: bool = _camera_center.distance_squared_to(_last_cull_cam) > 16.0 or _quad_world_size != _last_cull_size
+	if cull_moved:
+		_last_cull_cam = _camera_center
+		_last_cull_size = _quad_world_size
+		_cached_has_visible = _update_prop_culling()
+	_redraw_accum += delta
+	if _cached_has_visible:
+		if not _had_visible_drawables or _redraw_accum >= 0.066:
+			_redraw_accum = 0.0
+			_had_visible_drawables = true
+			queue_redraw()
+	elif _had_visible_drawables:
+		_redraw_accum = 0.0
+		_had_visible_drawables = false
 		queue_redraw()
 
 
@@ -528,6 +544,7 @@ func _on_fort_spawned(fort_id: int, world_pos: Vector2, island_index: int, max_h
 		"max_hp": maxf(1.0, max_hp),
 		"hit_flash": 0.0
 	}
+	_last_cull_cam = Vector2(INF, INF)
 
 
 func _on_fort_damaged(fort_id: int, hp: float, max_hp: float, world_pos: Vector2) -> void:

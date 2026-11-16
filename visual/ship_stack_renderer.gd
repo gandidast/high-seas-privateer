@@ -67,6 +67,10 @@ var _last_applied_flash: bool = false
 var _is_sunk: bool = false
 var _last_applied_sunk: bool = false
 var _was_onscreen: bool = true
+var _redraw_accum: float = 0.0
+var _last_applied_hdg: float = INF
+var _last_applied_bob_q: float = INF
+var _last_applied_roll_q: float = INF
 
 
 func _ready() -> void:
@@ -464,18 +468,45 @@ func _process(delta: float) -> void:
 	_apply_stack_transforms(bob_y, just_entered)
 	_update_wake_and_foam(delta)
 	_update_muzzle_flashes(delta)
-	if _speed > 4.0 or not _muzzle_flashes.is_empty() or not _foam_dots.is_empty() or _hit_flash_timer > 0.0 or just_entered:
+	_redraw_accum += delta
+	if just_entered or not _muzzle_flashes.is_empty() or _hit_flash_timer > 0.0:
+		_redraw_accum = 0.0
 		_idle_redraw_accum = 0.0
 		queue_redraw()
+	elif _speed > 4.0 or not _foam_dots.is_empty():
+		if _redraw_accum >= 0.033:
+			_redraw_accum = 0.0
+			_idle_redraw_accum = 0.0
+			queue_redraw()
 	else:
 		_idle_redraw_accum += delta
-		if _idle_redraw_accum >= 0.08:
+		if _idle_redraw_accum >= 0.12:
 			_idle_redraw_accum = 0.0
+			_redraw_accum = 0.0
 			queue_redraw()
 
 
 func _apply_stack_transforms(bob_y: float, force_all: bool = false) -> void:
 	var r_hdg: float = _render_heading()
+	var is_flashing: bool = (not _is_sunk) and (_hit_flash_timer > 0.0)
+	var update_tint: bool = force_all or (is_flashing != _last_applied_flash) or (_is_sunk != _last_applied_sunk)
+	var update_sail_scale: bool = force_all or (_sail_state != _last_applied_sail_state) or (_is_sunk != _last_applied_sunk)
+	var eff_roll: float = 3.4 if _is_sunk else _roll_amount
+	var bob_q: float = round(bob_y * 2.0) * 0.5
+	var roll_q: float = round(eff_roll * 4.0) * 0.25
+
+	if (
+		not force_all and not update_tint and not update_sail_scale
+		and absf(wrapf(r_hdg - _last_applied_hdg, -PI, PI)) <= 0.0025
+		and bob_q == _last_applied_bob_q
+		and roll_q == _last_applied_roll_q
+	):
+		return
+
+	_last_applied_hdg = r_hdg
+	_last_applied_bob_q = bob_q
+	_last_applied_roll_q = roll_q
+
 	var perp := Vector2(-sin(r_hdg), cos(r_hdg))
 	var sail_scale_x: float = 1.0
 	if _is_sunk:
@@ -487,12 +518,8 @@ func _apply_stack_transforms(bob_y: float, force_all: bool = false) -> void:
 	elif _sail_state == Contracts.SailState.FULL_SAIL:
 		sail_scale_x = 1.06
 
-	var is_flashing: bool = (not _is_sunk) and (_hit_flash_timer > 0.0)
-	var update_tint: bool = force_all or (is_flashing != _last_applied_flash) or (_is_sunk != _last_applied_sunk)
-	var update_sail_scale: bool = force_all or (_sail_state != _last_applied_sail_state) or (_is_sunk != _last_applied_sunk)
 	var eff_tint: Color = SUNK_TINT if _is_sunk else (FLASH_TINT if is_flashing else Color.WHITE)
 	var eff_y_step: float = LAYER_Y_STEP * (0.65 if _is_sunk else 1.0)
-	var eff_roll: float = 3.4 if _is_sunk else _roll_amount
 
 	var total_layers: int = _layer_sprites.size()
 	var denom: float = float(maxi(1, total_layers - 1))

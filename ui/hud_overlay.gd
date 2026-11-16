@@ -60,6 +60,7 @@ var _last_sb_ready: float = -1.0
 var _last_bow_ready: float = -1.0
 var _last_heading_q: float = -999.0
 var _last_wind_q: float = -999.0
+var _last_quest_player_pos: Vector2 = Vector2(INF, INF)
 
 var _arrow_poly: PackedVector2Array = PackedVector2Array([Vector2.ZERO, Vector2.ZERO, Vector2.ZERO])
 var _wind_vane_poly: PackedVector2Array = PackedVector2Array([Vector2.ZERO, Vector2.ZERO, Vector2.ZERO])
@@ -264,13 +265,17 @@ func _check_periodic_changes(wind_moving: bool) -> void:
 		var max_hp: float = float(player_ship.get("max_hp"))
 		var sail: int = int(player_ship.get("sail_state"))
 		var heading: float = float(player_ship.get("heading"))
-		if absf(hp - _last_hp) > 0.25 or absf(max_hp - _last_max_hp) > 0.25 or sail != _last_sail_state or absf(angle_difference(heading, _last_heading_q)) > 0.008 or not active_quests.is_empty():
+		var p_pos: Vector2 = player_ship.get("world_pos")
+		var quest_moved: bool = (not active_quests.is_empty()) and (
+			p_pos.distance_squared_to(_last_quest_player_pos) > 16.0
+			or active_quests[0].quest_type == Contracts.QuestType.BOUNTY
+		)
+		if absf(hp - _last_hp) > 0.25 or absf(max_hp - _last_max_hp) > 0.25 or sail != _last_sail_state or absf(angle_difference(heading, _last_heading_q)) > 0.008 or quest_moved:
 			_hud_dirty = true
-		if absf(float(player_ship.get("speed"))) > 1.0 or absf(angle_difference(heading, _last_heading_q)) > 0.01 or not all_ships_ref.is_empty() or not active_quests.is_empty() or bool(_tracked_sea_monster.get("active", false)):
+		if absf(float(player_ship.get("speed"))) > 1.0 or absf(angle_difference(heading, _last_heading_q)) > 0.01 or not all_ships_ref.is_empty() or quest_moved or bool(_tracked_sea_monster.get("active", false)):
 			_minimap_dirty = true
 	elif not all_ships_ref.is_empty() or bool(_tracked_sea_monster.get("active", false)):
 		_minimap_dirty = true
-	_update_labels()
 
 
 func _mark_dirty(hud: bool = true, minimap: bool = false) -> void:
@@ -365,7 +370,9 @@ func _draw_ship_panel() -> void:
 func _draw_quest_arrow(vp_size: Vector2) -> void:
 	if active_quests.is_empty() or player_ship == null:
 		return
-	var to_target: Vector2 = _resolve_quest_target_pos(active_quests[0]) - player_ship.get("world_pos")
+	var p_pos: Vector2 = player_ship.get("world_pos")
+	_last_quest_player_pos = p_pos
+	var to_target: Vector2 = _resolve_quest_target_pos(active_quests[0]) - p_pos
 	var dir: Vector2 = to_target.normalized() if to_target.length_squared() > 1.0 else Vector2.RIGHT
 	var top_bar := _get_top_bar_rect(vp_size)
 	var q_box := Rect2(top_bar.position.x, 68.0, top_bar.size.x, 46.0)

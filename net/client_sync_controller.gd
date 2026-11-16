@@ -5,8 +5,8 @@ extends RefCounted
 ## stationary-culled 60Hz remote extrapolation, and ShipStackRenderer sync.
 
 const SHIP_RENDERER_PATH: String = "res://visual/ship_stack_renderer.gd"
-const INTERP_BUFFER_SEC: float = 0.075
-const MAX_REMOTE_EXTRAP_SEC: float = 0.16
+const INTERP_BUFFER_SEC: float = 0.105
+const MAX_REMOTE_EXTRAP_SEC: float = 0.14
 
 var all_ships_ref: Dictionary = {}
 var ship_renderers_ref: Dictionary = {}
@@ -233,7 +233,7 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 		var srv_t: float = float(snapshot["t"])
 		_latest_srv_time = maxf(_latest_srv_time, srv_t)
 		var desired_clk: float = _latest_srv_time - INTERP_BUFFER_SEC
-		if not _has_srv_time or absf(desired_clk - _interp_clock) > 0.25:
+		if not _has_srv_time or absf(desired_clk - _interp_clock) > 0.35:
 			_interp_clock = desired_clk
 		_has_srv_time = true
 	else:
@@ -318,8 +318,10 @@ func step_remote_extrapolation(delta: float) -> void:
 		_interp_clock += delta
 		var target_clk: float = _latest_srv_time - INTERP_BUFFER_SEC
 		var clk_err: float = target_clk - _interp_clock
-		if absf(clk_err) > 0.015:
-			_interp_clock += clk_err * minf(1.0, delta * 4.0)
+		if absf(clk_err) > 0.35:
+			_interp_clock = target_clk
+		elif absf(clk_err) > 0.008:
+			_interp_clock += clk_err * minf(1.0, delta * 3.5)
 
 	var bus := _bus()
 	for sid_var in all_ships_ref.keys():
@@ -331,30 +333,54 @@ func step_remote_extrapolation(delta: float) -> void:
 			continue
 
 		var buf_var: Variant = _remote_interp.get(sid, null)
-		if buf_var is Dictionary:
-			var buf: Dictionary = buf_var
-			var t0: float = float(buf["t0"])
-			var t1: float = float(buf["t1"])
-			var p0: Vector2 = buf["p0"]
-			var p1: Vector2 = buf["p1"]
-			var h0: float = float(buf["h0"])
-			var h1: float = float(buf["h1"])
-			var v1: Vector2 = buf["v1"]
-			var w1: float = float(buf["w1"])
-			var next_pos: Vector2 = p1
-			var next_hdg: float = h1
-			if _interp_clock <= t1 and t1 > t0 + 0.001:
-				var alpha: float = clampf((_interp_clock - t0) / (t1 - t0), 0.0, 1.0)
+		if buf_var is Array and not (buf_var as Array).is_empty():
+			var buf: Array = buf_var
+			while buf.size() >= 3 and float((buf[1] as Dictionary)["t"]) <= _interp_clock:
+				buf.pop_front()
+
+			var next_pos: Vector2
+			var next_hdg: float
+			var vis_vel: Vector2 = Vector2.ZERO
+			var vis_ang: float = 0.0
+			var newest: Dictionary = buf[buf.size() - 1]
+			var newest_t: float = float(newest["t"])
+
+			if buf.size() >= 2 and _interp_clock <= newest_t:
+				var s0: Dictionary = buf[0]
+				var s1: Dictionary = buf[1]
+				for idx in range(1, buf.size()):
+					var cand: Dictionary = buf[idx]
+					if _interp_clock <= float(cand["t"]):
+						s0 = buf[idx - 1]
+						s1 = cand
+						break
+				var dt: float = maxf(0.001, float(s1["t"]) - float(s0["t"]))
+				var alpha: float = clampf((_interp_clock - float(s0["t"])) / dt, 0.0, 1.0)
+				var p0: Vector2 = s0["p"]
+				var p1: Vector2 = s1["p"]
+				var h0: float = float(s0["h"])
+				var h1: float = float(s1["h"])
 				next_pos = p0.lerp(p1, alpha)
 				next_hdg = lerp_angle(h0, h1, alpha)
+				vis_vel = (p1 - p0) / dt
+				vis_ang = wrapf(h1 - h0, -PI, PI) / dt
 			else:
-				var extra: float = clampf(_interp_clock - t1, 0.0, MAX_REMOTE_EXTRAP_SEC)
-				next_pos = p1 + v1.rotated(w1 * extra * 0.5) * extra
-				next_hdg = wrapf(h1 + w1 * extra, -PI, PI)
+				var extra: float = clampf(_interp_clock - newest_t, 0.0, MAX_REMOTE_EXTRAP_SEC)
+				var v_end: Vector2 = newest["v"]
+				var w_end: float = float(newest["w"])
+				next_pos = (newest["p"] as Vector2) + v_end.rotated(w_end * extra * 0.5) * extra
+				next_hdg = wrapf(float(newest["h"]) + w_end * extra, -PI, PI)
+				if extra < MAX_REMOTE_EXTRAP_SEC:
+					vis_vel = v_end
+					vis_ang = w_end
+
 			r_ship.set("world_pos", next_pos)
 			r_ship.set("heading", next_hdg)
 			if bus != null and _ship_visual_changed(sid, r_ship):
 				_emit_ship_state(bus, sid, r_ship)
+				var rend: Node2D = ship_renderers_ref.get(sid, null)
+				if rend != null and is_instance_valid(rend) and rend.has_method("set_kinematic_velocity"):
+					rend.call("set_kinematic_velocity", vis_vel, vis_ang)
 			continue
 
 		var age: float = float(_remote_extrap_age.get(sid, 0.0)) + delta
@@ -498,28 +524,25 @@ func _sync_remote_ship(sid: int, ship: Node, rend: Node2D, sd: Dictionary, is_ne
 	var next_hdg: float = float(ship.get("heading"))
 	var next_vel: Vector2 = ship.get("velocity")
 	var next_ang: float = float(ship.get("angular_velocity"))
+	var sample := {
+		"t": srv_time, "p": next_pos, "h": next_hdg,
+		"v": next_vel, "w": next_ang
+	}
 
-	if is_new_ship or pre_pos.distance_to(next_pos) > 110.0 or not _remote_interp.has(sid):
-		_remote_interp[sid] = {
-			"t0": srv_time, "p0": next_pos, "h0": next_hdg,
-			"t1": srv_time, "p1": next_pos, "h1": next_hdg,
-			"v1": next_vel, "w1": next_ang
-		}
+	if is_new_ship or pre_pos.distance_to(next_pos) > 110.0 or not (_remote_interp.get(sid, null) is Array):
+		_remote_interp[sid] = [sample]
 		if rend != null and is_instance_valid(rend) and rend.has_method("clear_visual_offset"):
 			rend.call("clear_visual_offset")
 		return
 
-	var prev_buf: Dictionary = _remote_interp[sid]
-	_remote_interp[sid] = {
-		"t0": maxf(float(prev_buf["t1"]), _interp_clock),
-		"p0": pre_pos,
-		"h0": pre_hdg,
-		"t1": maxf(srv_time, _interp_clock + 0.02),
-		"p1": next_pos,
-		"h1": next_hdg,
-		"v1": next_vel,
-		"w1": next_ang
-	}
+	var buf: Array = _remote_interp[sid]
+	if buf.is_empty() or srv_time > float((buf[buf.size() - 1] as Dictionary)["t"]) + 0.001:
+		buf.append(sample)
+	else:
+		buf[buf.size() - 1] = sample
+	while buf.size() > 4:
+		buf.pop_front()
+
 	# Restore smoothed pre_pos so interpolation glides cleanly without 1-frame snap
 	ship.set("world_pos", pre_pos)
 	ship.set("heading", pre_hdg)

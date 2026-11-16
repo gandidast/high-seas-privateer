@@ -15,8 +15,9 @@ signal bounty_spawned(quest_id: String, ship_id: int)
 signal salvage_spawned(quest_id: String, drop_id: int, world_pos: Vector2)
 
 const SYNC_INTERVAL: float = 0.058 # Fires cleanly every 2 ticks on 30Hz physics (steady 15 Hz, zero 66/100ms skip)
-const KEYFRAME_INTERVAL: float = 3.0 # Safety full-state keyframe interval
+const KEYFRAME_INTERVAL: float = 10.0 # Safety full-state keyframe interval (WebSocket/TCP is reliable)
 const INPUT_INTERVAL: float = 0.05
+const AOI_FULL_RATE_DIST_SQ: float = 1250.0 * 1250.0
 
 enum Mode { SOLO = 0, CLIENT = 1, SERVER = 2 }
 
@@ -53,6 +54,10 @@ var _last_sent_monster_rev: int = -1
 var _last_wind_vec: Vector3 = Vector3(999.0, 999.0, -1.0)
 var _last_weather_state: int = -1
 var _last_weather_int: float = -1.0
+var _snapshot_seq: int = 0
+var _peers_needing_full: Dictionary = {}
+var _pending_shot_batch: Array = []
+var _pending_impact_batch: Array = []
 
 
 static func _get_all_cmdline_args() -> PackedStringArray:
@@ -172,7 +177,7 @@ func start_solo() -> void:
 func start_server(p_port: int = -1, p_seed: int = Contracts.DEFAULT_WORLD_SEED) -> int:
 	shutdown()
 	Engine.physics_ticks_per_second = 30
-	Engine.max_fps = 60
+	Engine.max_fps = 30
 	listen_port = get_cli_port(Contracts.SERVER_DEFAULT_PORT) if p_port <= 0 else p_port
 	world_seed = p_seed
 	_peer = WebSocketMultiplayerPeer.new()
@@ -256,6 +261,7 @@ func step_network(delta: float, local_steer: float = 0.0, local_sail_state: int 
 		_server_time += delta
 		_sync_accum += delta
 		_keyframe_accum += delta
+		_flush_combat_batches()
 		if _sync_accum >= SYNC_INTERVAL:
 			_sync_accum = 0.0
 			_broadcast_world_snapshot()
@@ -337,6 +343,10 @@ func _reset_snapshot_caches() -> void:
 	_last_wind_vec = Vector3(999.0, 999.0, -1.0)
 	_last_weather_state = -1
 	_last_weather_int = -1.0
+	_snapshot_seq = 0
+	_peers_needing_full.clear()
+	_pending_shot_batch.clear()
+	_pending_impact_batch.clear()
 
 
 func _connect_multiplayer_signals() -> void:
@@ -360,8 +370,8 @@ func _bind_server_eventbus_relays() -> void:
 		return
 	_signals_bound = true
 	bus.broadside_fired.connect(func(sid: int, sb: bool, orig: Vector2, dir: Vector2, _c: Array): _relay_rpc("rpc_client_broadside_fired", [sid, sb, orig, dir]))
-	bus.cannonball_spawned.connect(func(sd: Dictionary): _relay_rpc("rpc_client_cannonball_spawned", [sd]))
-	bus.cannonball_impact.connect(func(pos: Vector2, hsid: int, dmg: float, splash: bool, crit: bool): _relay_rpc("rpc_client_cannonball_impact", [pos, hsid, dmg, splash, crit]))
+	bus.cannonball_spawned.connect(_on_server_cannonball_spawned)
+	bus.cannonball_impact.connect(_on_server_cannonball_impact)
 	bus.ship_sunk.connect(func(sid: int, pos: Vector2, fac: int, ksid: int): _relay_rpc("rpc_client_ship_sunk", [sid, pos, fac, ksid]))
 	bus.player_death_penalty.connect(func(sid: int, gold_lost: int, respawn_sec: float): _relay_rpc("rpc_client_player_death_penalty", [sid, gold_lost, respawn_sec]))
 	bus.loot_collected.connect(func(did: int, csid: int, ld: Contracts.LootDropData): _relay_rpc("rpc_client_loot_collected", [did, csid, ld.gold if ld != null else 0]))
@@ -373,6 +383,49 @@ func _bind_server_eventbus_relays() -> void:
 	bus.sea_monster_defeated.connect(func(mid: int, pos: Vector2): _relay_rpc("rpc_client_sea_monster_defeated", [mid, pos]))
 
 
+func _on_server_cannonball_spawned(sd: Dictionary) -> void:
+	if current_mode != Mode.SERVER or multiplayer.get_peers().is_empty():
+		return
+	var compact := {
+		"shot_id": int(sd.get("shot_id", -1)),
+		"shooter_id": int(sd.get("shooter_id", -1)),
+		"origin": sd.get("origin", sd.get("pos", Vector2.ZERO)),
+		"vel": sd.get("vel", sd.get("velocity", Vector2.ZERO)),
+		"max_range": float(sd.get("max_range", 250.0))
+	}
+	if bool(sd.get("is_bow", false)):
+		compact["is_bow"] = true
+	if float(sd.get("burn_dps", 0.0)) > 0.0:
+		compact["burn_dps"] = float(sd["burn_dps"])
+	if float(sd.get("harpoon_pull", 0.0)) > 0.0:
+		compact["harpoon_pull"] = float(sd["harpoon_pull"])
+	if float(sd.get("chain_slow", 0.0)) > 0.0:
+		compact["chain_slow"] = float(sd["chain_slow"])
+	var iid: String = str(sd.get("item_id", ""))
+	if not iid.is_empty():
+		compact["item_id"] = iid
+	_pending_shot_batch.append(compact)
+
+
+func _on_server_cannonball_impact(pos: Vector2, hsid: int, dmg: float, splash: bool, crit: bool) -> void:
+	if current_mode != Mode.SERVER or multiplayer.get_peers().is_empty():
+		return
+	_pending_impact_batch.append([pos, hsid, snappedf(dmg, 0.1), splash, crit])
+
+
+func _flush_combat_batches() -> void:
+	if current_mode != Mode.SERVER or multiplayer.get_peers().is_empty():
+		_pending_shot_batch.clear()
+		_pending_impact_batch.clear()
+		return
+	if not _pending_shot_batch.is_empty():
+		rpc("rpc_client_cannonball_batch", _pending_shot_batch)
+		_pending_shot_batch.clear()
+	if not _pending_impact_batch.is_empty():
+		rpc("rpc_client_cannonball_impacts", _pending_impact_batch)
+		_pending_impact_batch.clear()
+
+
 func _relay_rpc(method_name: String, args: Array) -> void:
 	if current_mode == Mode.SERVER and not multiplayer.get_peers().is_empty():
 		callv("rpc", [method_name] + args)
@@ -381,7 +434,6 @@ func _relay_rpc(method_name: String, args: Array) -> void:
 func _on_peer_connected(peer_id: int) -> void:
 	if current_mode == Mode.SERVER:
 		print("[NetworkManager] Peer connected: %d" % peer_id)
-		_force_full_snapshot = true
 
 
 func _on_peer_disconnected(peer_id: int) -> void:
@@ -389,6 +441,7 @@ func _on_peer_disconnected(peer_id: int) -> void:
 		print("[NetworkManager] Peer disconnected: %d" % peer_id)
 		_peer_names.erase(peer_id)
 		_last_sent_ships.erase(peer_id)
+		_peers_needing_full.erase(peer_id)
 		peer_ship_left.emit(peer_id)
 
 
@@ -416,10 +469,20 @@ func _broadcast_world_snapshot() -> void:
 	if current_mode != Mode.SERVER or multiplayer.get_peers().is_empty():
 		return
 
+	_snapshot_seq += 1
 	var send_full: bool = _force_full_snapshot or (_keyframe_accum >= KEYFRAME_INTERVAL)
 	if send_full:
 		_force_full_snapshot = false
 		_keyframe_accum = 0.0
+		_peers_needing_full.clear()
+
+	var player_positions: Array[Vector2] = []
+	for ps_var in all_ships_ref.values():
+		var ps: Node = ps_var
+		if ps != null and not bool(ps.get("is_sunk")):
+			var p_pos: Variant = ps.get("world_pos")
+			if p_pos is Vector2:
+				player_positions.append(p_pos as Vector2)
 
 	var ships_arr: Array = []
 	var seen_ship_ids: Dictionary = {}
@@ -429,7 +492,7 @@ func _broadcast_world_snapshot() -> void:
 			var sid: int = int(s.get("ship_id"))
 			if not seen_ship_ids.has(sid):
 				seen_ship_ids[sid] = true
-				ships_arr.append(_pack_ship_snapshot(s, sid, send_full))
+				ships_arr.append(_pack_ship_snapshot(s, sid, send_full, false))
 				if s.has_meta("last_input_seq"):
 					acks[sid] = int(s.get_meta("last_input_seq"))
 	if ai_director_ref != null:
@@ -438,7 +501,8 @@ func _broadcast_world_snapshot() -> void:
 				var ai_sid: int = int(ai_s.get("ship_id"))
 				if not seen_ship_ids.has(ai_sid):
 					seen_ship_ids[ai_sid] = true
-					ships_arr.append(_pack_ship_snapshot(ai_s, ai_sid, send_full))
+					var is_far: bool = _is_far_from_players(ai_s.get("world_pos") as Vector2, player_positions)
+					ships_arr.append(_pack_ship_snapshot(ai_s, ai_sid, send_full, is_far))
 
 	for old_sid in _last_sent_ships.keys():
 		if not seen_ship_ids.has(old_sid):
@@ -489,13 +553,69 @@ func _broadcast_world_snapshot() -> void:
 			snapshot["weather_state"] = cw
 			snapshot["weather_intensity"] = wi
 
-	rpc("rpc_world_snapshot", snapshot)
+	if _peers_needing_full.is_empty():
+		rpc("rpc_world_snapshot", snapshot)
+	else:
+		var full_snap: Dictionary = _build_readonly_full_snapshot(acks)
+		for peer_id in multiplayer.get_peers():
+			if _peers_needing_full.has(peer_id):
+				rpc_id(peer_id, "rpc_world_snapshot", full_snap)
+			else:
+				rpc_id(peer_id, "rpc_world_snapshot", snapshot)
+		_peers_needing_full.clear()
 
 
-func _pack_ship_snapshot(s: Node, sid: int, send_full: bool) -> Dictionary:
+func _is_far_from_players(pos: Vector2, player_positions: Array[Vector2]) -> bool:
+	if player_positions.is_empty():
+		return false
+	for p_pos in player_positions:
+		if pos.distance_squared_to(p_pos) <= AOI_FULL_RATE_DIST_SQ:
+			return false
+	return true
+
+
+func _build_readonly_full_snapshot(acks: Dictionary) -> Dictionary:
+	var full_ships: Array = []
+	var seen_ids: Dictionary = {}
+	for s in all_ships_ref.values():
+		if s != null and s.has_method("to_sync_dict"):
+			var sid: int = int(s.get("ship_id"))
+			if not seen_ids.has(sid):
+				seen_ids[sid] = true
+				full_ships.append(_build_ship_full_dict(s, sid))
+	if ai_director_ref != null:
+		for ai_s in ai_director_ref.ai_ships.values():
+			if ai_s != null and ai_s.has_method("to_sync_dict"):
+				var ai_sid: int = int(ai_s.get("ship_id"))
+				if not seen_ids.has(ai_sid):
+					seen_ids[ai_sid] = true
+					full_ships.append(_build_ship_full_dict(ai_s, ai_sid))
+
+	var snap: Dictionary = { "t": snappedf(_server_time, 0.001), "ships": full_ships }
+	if not acks.is_empty():
+		snap["acks"] = acks
+	if loot_system_ref != null:
+		snap["drops"] = loot_system_ref.to_sync_array()
+	if combat_system_ref != null:
+		snap["forts"] = combat_system_ref.get_fort_sync_array()
+	if ai_director_ref != null:
+		snap["sea_monster"] = ai_director_ref.get_sea_monster_sync_dict()
+		snap["wanted_level"] = ai_director_ref.wanted_level
+	if world_map_ref != null:
+		var wd_v: Variant = world_map_ref.get("wind_direction")
+		var wd: Vector2 = wd_v if wd_v is Vector2 else Vector2.RIGHT
+		snap["wind_x"] = snappedf(wd.x, 0.01)
+		snap["wind_y"] = snappedf(wd.y, 0.01)
+		snap["wind_strength"] = snappedf(float(world_map_ref.get("wind_strength")), 0.01)
+		snap["weather_state"] = int(world_map_ref.get("current_weather"))
+		snap["weather_intensity"] = snappedf(float(world_map_ref.get("weather_intensity")), 0.01)
+	return snap
+
+
+func _build_ship_full_dict(s: Node, sid: int) -> Dictionary:
 	var wp: Vector2 = s.get("world_pos")
 	var vel: Vector2 = s.get("velocity")
-	var cur := {
+	return {
 		"ship_id": sid,
 		"faction": int(s.get("faction")),
 		"ship_name": str(s.get("ship_name")),
@@ -515,6 +635,10 @@ func _pack_ship_snapshot(s: Node, sid: int, send_full: bool) -> Dictionary:
 		"chain_slow_timer": snappedf(float(s.get("chain_slow_timer")), 0.05),
 		"burn_timer": snappedf(float(s.get("burn_timer")), 0.05)
 	}
+
+
+func _pack_ship_snapshot(s: Node, sid: int, send_full: bool, is_far_ai: bool = false) -> Dictionary:
+	var cur: Dictionary = _build_ship_full_dict(s, sid)
 	var prev: Variant = _last_sent_ships.get(sid, null)
 	if send_full or not (prev is Dictionary):
 		_last_sent_ships[sid] = cur
@@ -526,6 +650,8 @@ func _pack_ship_snapshot(s: Node, sid: int, send_full: bool) -> Dictionary:
 		or pd["hull_tier"] != cur["hull_tier"] or pd["max_hp"] != cur["max_hp"]
 		or pd["current_harbor_index"] != cur["current_harbor_index"]
 	)
+	if is_far_ai and (_snapshot_seq % 4 != 0) and not meta_changed and pd["hp"] == cur["hp"] and pd["is_sunk"] == cur["is_sunk"]:
+		return { "ship_id": sid }
 	var motion_changed: bool = (
 		pd["x"] != cur["x"] or pd["y"] != cur["y"] or pd["vx"] != cur["vx"] or pd["vy"] != cur["vy"]
 		or pd["heading"] != cur["heading"] or pd["speed"] != cur["speed"]
@@ -560,7 +686,7 @@ func rpc_join_world(captain_name: String) -> void:
 	if clean_name.is_empty():
 		clean_name = "Pirat #%d" % sender_id
 	_peer_names[sender_id] = clean_name
-	_force_full_snapshot = true
+	_peers_needing_full[sender_id] = true
 	_sync_accum = SYNC_INTERVAL
 	peer_ship_joined.emit(sender_id, clean_name)
 	rpc_id(sender_id, "rpc_welcome_client", sender_id, world_seed)
@@ -617,7 +743,6 @@ func rpc_request_bounty_spawn(target_pos: Vector2, boss_name: String, hull_tier:
 	var clean_name: String = boss_name.strip_edges().left(32)
 	var clamped_tier: int = clampi(hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
 	var spawned_id: int = ai_director_ref.spawn_ai_ship(Contracts.ShipFaction.PIRATE, target_pos, true, clean_name, clamped_tier, false)
-	_force_full_snapshot = true
 	if spawned_id > 0:
 		rpc_id(multiplayer.get_remote_sender_id(), "rpc_client_bounty_spawned", quest_id, spawned_id)
 
@@ -633,7 +758,6 @@ func rpc_request_salvage_spawn(target_pos: Vector2, quest_id: String) -> void:
 	if current_mode != Mode.SERVER or loot_system_ref == null:
 		return
 	var drop: Contracts.LootDropData = loot_system_ref.spawn_salvage_target(target_pos, quest_id)
-	_force_full_snapshot = true
 	if drop != null:
 		rpc_id(multiplayer.get_remote_sender_id(), "rpc_client_salvage_spawned", quest_id, drop.drop_id, drop.world_pos)
 
@@ -700,6 +824,31 @@ func rpc_client_cannonball_spawned(shot_data: Dictionary) -> void:
 func rpc_client_cannonball_impact(world_pos: Vector2, hit_ship_id: int, damage: float, is_water_splash: bool, is_powder_crit: bool) -> void:
 	if current_mode == Mode.CLIENT and _bus() != null:
 		_bus().cannonball_impact.emit(world_pos, hit_ship_id, damage, is_water_splash, is_powder_crit)
+
+
+@rpc("authority", "unreliable")
+func rpc_client_cannonball_batch(shots: Array) -> void:
+	if current_mode != Mode.CLIENT:
+		return
+	var bus := _bus()
+	if bus == null:
+		return
+	for shot_var in shots:
+		if shot_var is Dictionary:
+			bus.cannonball_spawned.emit(shot_var)
+
+
+@rpc("authority", "unreliable")
+func rpc_client_cannonball_impacts(impacts: Array) -> void:
+	if current_mode != Mode.CLIENT:
+		return
+	var bus := _bus()
+	if bus == null:
+		return
+	for imp_var in impacts:
+		if imp_var is Array and (imp_var as Array).size() >= 5:
+			var imp: Array = imp_var
+			bus.cannonball_impact.emit(imp[0], int(imp[1]), float(imp[2]), bool(imp[3]), bool(imp[4]))
 
 
 @rpc("authority", "reliable")
