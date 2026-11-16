@@ -229,6 +229,7 @@ func bind_simulation(
 
 func start_solo() -> void:
 	shutdown()
+	Engine.physics_ticks_per_second = 60
 	current_mode = Mode.SOLO
 	local_peer_id = 1
 	var bus := _bus()
@@ -238,6 +239,7 @@ func start_solo() -> void:
 
 func start_server(p_port: int = -1, p_seed: int = Contracts.DEFAULT_WORLD_SEED) -> int:
 	shutdown()
+	Engine.physics_ticks_per_second = 30
 	if p_port <= 0:
 		listen_port = get_cli_port(Contracts.SERVER_DEFAULT_PORT)
 	else:
@@ -370,6 +372,7 @@ func _close_peer() -> void:
 
 func start_client(url: String, captain_name: String = "Käpt'n") -> int:
 	_close_peer()
+	Engine.physics_ticks_per_second = 60
 	local_captain_name = captain_name.strip_edges()
 	if local_captain_name.is_empty():
 		local_captain_name = "Freibeuter"

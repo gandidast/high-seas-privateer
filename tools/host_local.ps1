@@ -15,7 +15,8 @@
 param(
     [int]$Port = 8080,
     [int]$Seed = 1337420,
-    [string]$GodotBin = ""
+    [string]$GodotBin = "",
+    [switch]$NoInteractive
 )
 
 $ErrorActionPreference = "Stop"
@@ -83,7 +84,17 @@ function Resolve-CloudflaredBinary {
 
     Write-Host "[Cloudflare] 'cloudflared' nicht gefunden. Lade cloudflared-windows-amd64.exe nach tools\cloudflared.exe..." -ForegroundColor Yellow
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $CloudflaredDownloadUrl -OutFile $LocalCloudflared -UseBasicParsing
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    try {
+        if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+            & curl.exe -fsSL --retry 3 $CloudflaredDownloadUrl -o $LocalCloudflared
+        } else {
+            Invoke-WebRequest -Uri $CloudflaredDownloadUrl -OutFile $LocalCloudflared -UseBasicParsing
+        }
+    } finally {
+        $ProgressPreference = $prevProgress
+    }
     if (-not (Test-Path $LocalCloudflared)) {
         throw "Download von cloudflared fehlgeschlagen ($CloudflaredDownloadUrl)."
     }
@@ -147,11 +158,11 @@ try {
     }
 
     $cloudflaredExe = Resolve-CloudflaredBinary
-    Write-Host "[2/2] Starte cloudflared tunnel --url http://localhost:$Port ..." -ForegroundColor Green
+    Write-Host "[2/2] Starte cloudflared tunnel --url http://127.0.0.1:$Port ..." -ForegroundColor Green
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $cloudflaredExe
-    $psi.Arguments = "tunnel --url http://localhost:$Port --no-autoupdate"
+    $psi.Arguments = "tunnel --url http://127.0.0.1:$Port --no-autoupdate"
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -212,7 +223,14 @@ try {
         Write-Host ""
     }
 
-    [void](Read-Host "Dieses Fenster offen lassen! Druecke [ENTER], um Server & Tunnel sauber zu beenden")
+    if ($NoInteractive) {
+        Write-Host "Laeuft im Hintergrund-Modus (-NoInteractive)..." -ForegroundColor Yellow
+        while ($tunnelProc -and -not $tunnelProc.HasExited) {
+            Start-Sleep -Seconds 2
+        }
+    } else {
+        [void](Read-Host "Dieses Fenster offen lassen! Druecke [ENTER], um Server & Tunnel sauber zu beenden")
+    }
 } finally {
     if ($outEvent) { Unregister-Event -SourceIdentifier $outEvent.Name -ErrorAction SilentlyContinue }
     if ($errEvent) { Unregister-Event -SourceIdentifier $errEvent.Name -ErrorAction SilentlyContinue }

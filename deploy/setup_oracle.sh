@@ -30,7 +30,8 @@ echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-
 apt-get update -y
 apt-get install -y --no-install-recommends \
 	curl unzip ca-certificates gnupg debian-keyring \
-	debian-archive-keyring apt-transport-https git ufw iptables-persistent
+	debian-archive-keyring apt-transport-https git ufw iptables-persistent \
+	libfontconfig1 libfreetype6
 
 echo "=== [2/6] Firewall oeffnen (Ports 80, 443, ${PORT} in iptables & ufw) ==="
 # Oracle Cloud Ubuntu images often ship with a default iptables REJECT rule.
@@ -73,7 +74,8 @@ GODOT_URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSIO
 
 if [[ ! -x /usr/local/bin/godot ]]; then
 	echo "Lade ${GODOT_URL} herunter (${ARCH})..."
-	curl -fsSL "${GODOT_URL}" -o "/tmp/${GODOT_ZIP}"
+	curl -fSL --retry 3 "${GODOT_URL}" -o "/tmp/${GODOT_ZIP}" \
+		|| curl -fSL --retry 3 "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}/${GODOT_ZIP}" -o "/tmp/${GODOT_ZIP}"
 	rm -rf /tmp/godot_extract
 	unzip -o -q "/tmp/${GODOT_ZIP}" -d /tmp/godot_extract
 	EXTRACTED_BIN="$(find /tmp/godot_extract -maxdepth 2 -type f -name "Godot_v*" | head -n 1)"
@@ -97,6 +99,11 @@ fi
 
 if [[ -d "${APP_DIR}/deploy" ]]; then
 	chmod +x "${APP_DIR}/deploy/"*.sh || true
+fi
+
+if [[ -f "${APP_DIR}/project.godot" ]]; then
+	echo "Erzeuge Godot Klassen-Cache (--import)..."
+	/usr/local/bin/godot --headless --path "${APP_DIR}" --import || true
 fi
 
 if [[ ! -f "${APP_DIR}/project.godot" ]] && [[ ! -x "${APP_DIR}/build/linux/pirate_server.x86_64" ]] && [[ ! -f "${APP_DIR}/server.pck" ]]; then
@@ -167,6 +174,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${APP_DIR}
+Environment="PORT=${PORT}"
+Environment="HOME=/tmp"
 ExecStart=${EXEC_CMD}
 Restart=always
 RestartSec=3
