@@ -30,7 +30,7 @@ echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-
 apt-get update -y
 apt-get install -y --no-install-recommends \
 	curl unzip ca-certificates gnupg debian-keyring \
-	debian-archive-keyring apt-transport-https git ufw iptables-persistent \
+	debian-archive-keyring apt-transport-https git iptables-persistent \
 	libfontconfig1 libfreetype6
 
 echo "=== [2/6] Firewall oeffnen (Ports 80, 443, ${PORT} in iptables & ufw) ==="
