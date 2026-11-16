@@ -54,7 +54,7 @@ http {
                 return 418;
             }
             default_type text/html;
-            return 200 '<!DOCTYPE html><html><head><meta charset="utf-8"><title>High Seas Pixel Privateer Server</title></head><body style="background:#0c1322;color:#f5e6c4;font-family:sans-serif;text-align:center;padding:48px"><h1>High Seas Pixel Privateer - One-World Server</h1><p>Status: <strong>ONLINE</strong> (Godot 4.7.2 WebSocket Server)</p><p>WebSocket Endpoint: <code>wss://fabsipapi-high-seas-privateer.hf.space</code></p><p><a href="https://gandidast.github.io/high-seas-privateer/" style="color:#f5c84b;font-size:18px">Play in Browser (GitHub Pages)</a></p></body></html>';
+            return 200 '<!DOCTYPE html><html><head><meta charset="utf-8"><title>High Seas Pixel Privateer Server</title></head><body style="background:#0c1322;color:#f5e6c4;font-family:sans-serif;text-align:center;padding:48px"><h1>High Seas Pixel Privateer - One-World Server</h1><p>Status: <strong>ONLINE</strong> (Godot 4.7.2 WebSocket Server)</p><p>WebSocket Endpoint: <code id="ws"></code></p><script>document.getElementById("ws").textContent = location.origin.replace(/^http/, "ws");</script><p><a href="https://gandidast.github.io/high-seas-privateer/" style="color:#f5c84b;font-size:18px">Play in Browser (GitHub Pages)</a></p></body></html>';
         }
 
         location @ws {
