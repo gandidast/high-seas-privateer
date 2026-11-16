@@ -147,19 +147,21 @@ signal quest_list_updated(quests: Array)
 signal network_mode_changed(mode: String, is_server: bool)
 signal notification_posted(message: String, category: String)
 
-static var _fallback_bus: Contracts = null
+static var _fallback_bus: Node = null
 
 func _enter_tree() -> void:
 	_fallback_bus = self
 
-static func bus() -> Contracts:
+static func bus() -> Variant:
 	var ml := Engine.get_main_loop() as SceneTree
 	if ml != null and ml.root != null:
-		var node := ml.root.get_node_or_null("EventBus") as Contracts
+		var node: Node = ml.root.get_node_or_null("EventBus")
 		if node != null:
 			return node
 	if _fallback_bus == null:
-		_fallback_bus = Contracts.new()
+		var script_res := ResourceLoader.load("res://shared/contracts.gd") as Script
+		if script_res != null:
+			_fallback_bus = script_res.new()
 	return _fallback_bus
 
 # ==============================================================================

@@ -24,6 +24,9 @@ RUN curl -fSL --retry 3 "https://github.com/godotengine/godot/releases/download/
 WORKDIR /app
 COPY . /app
 
+# Pre-generate Godot global script class cache and resource imports during image build
+RUN godot --headless --path /app --import || true
+
 EXPOSE 8080
 
 # Render.com and Koyeb inject $PORT automatically; NetworkManager reads OS.get_environment("PORT") (fallback 8080)

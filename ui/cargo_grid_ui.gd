@@ -58,7 +58,7 @@ func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	visible = false
 
-	var bus := Contracts.bus()
+	var bus: Contracts = Contracts.bus()
 	if not bus.cargo_grid_toggled.is_connected(_on_cargo_grid_toggled):
 		bus.cargo_grid_toggled.connect(_on_cargo_grid_toggled)
 	if not bus.ship_stats_compiled.is_connected(_on_ship_stats_compiled):
