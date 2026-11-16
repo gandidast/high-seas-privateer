@@ -11,6 +11,8 @@ signal snapshot_received(snapshot: Dictionary)
 signal peer_ship_joined(peer_id: int, captain_name: String)
 signal peer_ship_left(peer_id: int)
 signal connection_status_changed(status_text: String)
+signal bounty_spawned(quest_id: String, ship_id: int)
+signal salvage_spawned(quest_id: String, drop_id: int, world_pos: Vector2)
 
 const SYNC_INTERVAL: float = 0.058 # Fires cleanly every 2 ticks on 30Hz physics (steady 15 Hz, zero 66/100ms skip)
 const KEYFRAME_INTERVAL: float = 3.0 # Safety full-state keyframe interval
@@ -293,9 +295,14 @@ func send_harbor_ui_state(is_open: bool) -> void:
 		rpc_id(1, "rpc_set_harbor_ui_open", is_open)
 
 
-func send_bounty_quest_request(target_pos: Vector2, boss_name: String, hull_tier: int = Contracts.ShipClass.BRIGANTINE) -> void:
+func send_bounty_quest_request(target_pos: Vector2, boss_name: String, hull_tier: int = Contracts.ShipClass.BRIGANTINE, quest_id: String = "") -> void:
 	if _can_send_client_rpc():
-		rpc_id(1, "rpc_request_bounty_spawn", target_pos, boss_name, hull_tier)
+		rpc_id(1, "rpc_request_bounty_spawn", target_pos, boss_name, hull_tier, quest_id)
+
+
+func send_salvage_quest_request(target_pos: Vector2, quest_id: String) -> void:
+	if _can_send_client_rpc():
+		rpc_id(1, "rpc_request_salvage_spawn", target_pos, quest_id)
 
 
 func send_player_stats(stats: Contracts.ShipStats) -> void:
@@ -604,13 +611,37 @@ func rpc_set_harbor_ui_open(is_open: bool) -> void:
 
 
 @rpc("any_peer", "reliable")
-func rpc_request_bounty_spawn(target_pos: Vector2, boss_name: String, hull_tier: int = Contracts.ShipClass.BRIGANTINE) -> void:
+func rpc_request_bounty_spawn(target_pos: Vector2, boss_name: String, hull_tier: int = Contracts.ShipClass.BRIGANTINE, quest_id: String = "") -> void:
 	if current_mode != Mode.SERVER or ai_director_ref == null:
 		return
 	var clean_name: String = boss_name.strip_edges().left(32)
 	var clamped_tier: int = clampi(hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
-	ai_director_ref.spawn_ai_ship(Contracts.ShipFaction.PIRATE, target_pos, true, clean_name, clamped_tier, false)
+	var spawned_id: int = ai_director_ref.spawn_ai_ship(Contracts.ShipFaction.PIRATE, target_pos, true, clean_name, clamped_tier, false)
 	_force_full_snapshot = true
+	if spawned_id > 0:
+		rpc_id(multiplayer.get_remote_sender_id(), "rpc_client_bounty_spawned", quest_id, spawned_id)
+
+
+@rpc("authority", "reliable")
+func rpc_client_bounty_spawned(quest_id: String, ship_id: int) -> void:
+	if current_mode == Mode.CLIENT:
+		bounty_spawned.emit(quest_id, ship_id)
+
+
+@rpc("any_peer", "reliable")
+func rpc_request_salvage_spawn(target_pos: Vector2, quest_id: String) -> void:
+	if current_mode != Mode.SERVER or loot_system_ref == null:
+		return
+	var drop: Contracts.LootDropData = loot_system_ref.spawn_salvage_target(target_pos, quest_id)
+	_force_full_snapshot = true
+	if drop != null:
+		rpc_id(multiplayer.get_remote_sender_id(), "rpc_client_salvage_spawned", quest_id, drop.drop_id, drop.world_pos)
+
+
+@rpc("authority", "reliable")
+func rpc_client_salvage_spawned(quest_id: String, drop_id: int, world_pos: Vector2) -> void:
+	if current_mode == Mode.CLIENT:
+		salvage_spawned.emit(quest_id, drop_id, world_pos)
 
 
 @rpc("any_peer", "reliable")
