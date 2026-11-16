@@ -6,6 +6,8 @@ extends Control
 ## - Top-right: Chart-style MinimapRenderer (click or [M] opens fullscreen WorldMapOverlay).
 ## - Bottom-center: Brass Compass & Windrose medallion with wind strength & heading readout.
 
+const WorldMapOverlayScript := preload("res://ui/world_map_overlay.gd")
+
 const DEFAULT_VIEWPORT_W: float = 1280.0
 const DEFAULT_VIEWPORT_H: float = 720.0
 const COMPASS_RADIUS: float = 44.0
@@ -41,7 +43,7 @@ var _death_gold_lost: int = 20
 var _death_countdown: float = 0.0
 
 var _minimap: MinimapRenderer = null
-var _world_map: WorldMapOverlay = null
+var _world_map: WorldMapOverlayScript = null
 var _labels: HudLabelsView = HudLabelsView.new()
 var _hud_dirty: bool = true
 var _minimap_dirty: bool = true
@@ -82,7 +84,7 @@ func _ready() -> void:
 
 	_labels.build(self)
 
-	_world_map = WorldMapOverlay.new()
+	_world_map = WorldMapOverlayScript.new()
 	_world_map.name = "WorldMapOverlay"
 	add_child(_world_map)
 

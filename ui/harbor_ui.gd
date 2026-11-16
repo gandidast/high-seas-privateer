@@ -21,6 +21,7 @@ var active_quests: Array[Contracts.QuestData] = []
 
 var _last_shop_island_idx: int = -1
 var _shop_just_refreshed: bool = false
+var _bound_network_manager: Node = null
 var _active_left_tab: String = "shop"
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _shop_panel: HarborShopPanel = HarborShopPanel.new()
@@ -68,6 +69,32 @@ func _sync_network_harbor_state(is_open: bool) -> void:
 		nm.call("send_harbor_ui_state", is_open)
 
 
+func _ensure_network_quest_signals() -> void:
+	var nm: Node = _get_network_manager()
+	if nm == null or nm == _bound_network_manager:
+		return
+	_bound_network_manager = nm
+	if nm.has_signal("bounty_spawned") and not nm.is_connected("bounty_spawned", Callable(self, "_on_network_bounty_spawned")):
+		nm.connect("bounty_spawned", Callable(self, "_on_network_bounty_spawned"))
+	if nm.has_signal("salvage_spawned") and not nm.is_connected("salvage_spawned", Callable(self, "_on_network_salvage_spawned")):
+		nm.connect("salvage_spawned", Callable(self, "_on_network_salvage_spawned"))
+
+
+func _on_network_bounty_spawned(quest_id: String, ship_id: int) -> void:
+	for q in active_quests:
+		if q.id == quest_id:
+			q.target_ship_id = ship_id
+			return
+
+
+func _on_network_salvage_spawned(quest_id: String, drop_id: int, world_pos: Vector2) -> void:
+	for q in active_quests:
+		if q.id == quest_id:
+			q.target_drop_id = drop_id
+			q.target_pos = world_pos
+			return
+
+
 func _ready() -> void:
 	_rng.randomize()
 	_tab_active_style = UIThemeHelper.make_box_style(Color(0.28, 0.22, 0.16), UIThemeHelper.COL_GOLD, 3, 1, 5)
@@ -79,6 +106,7 @@ func _ready() -> void:
 	visible = false
 	_build_ui()
 	_connect_signals()
+	_ensure_network_quest_signals()
 
 
 func setup(
@@ -97,6 +125,7 @@ func setup(
 	current_gold = p_starting_gold
 	owned_ship_tiers = { Contracts.ShipClass.SLOOP: true }
 	owned_ship_tiers[_get_player_hull_tier()] = true
+	_ensure_network_quest_signals()
 	_refresh_ui()
 
 
@@ -562,7 +591,11 @@ func _select_or_buy_ship_tier(new_tier: int) -> void:
 		var new_stats: Contracts.ShipStats = player_grid.call("compile_stats")
 		if player_ship != null and player_ship.has_method("apply_stats"):
 			player_ship.call("apply_stats", new_stats)
-			player_ship.set("hp", new_stats.max_hp)
+			if not is_owned:
+				player_ship.set("hp", new_stats.max_hp)
+				var nm: Node = _get_network_manager()
+				if nm != null and int(nm.get("current_mode")) == NetworkManager.Mode.CLIENT and nm.has_method("send_ship_repair"):
+					nm.call("send_ship_repair", new_stats.max_hp)
 
 	var moved_to_stash: int = 0
 	if player_grid != null and player_grid.get("stash_items") is Array:
@@ -600,18 +633,24 @@ func _on_sell_all_cargo_pressed() -> void:
 func _accept_quest(q: Contracts.QuestData) -> void:
 	if _is_quest_active(q.id):
 		return
+	_ensure_network_quest_signals()
+	var nm: Node = _get_network_manager()
+	var is_client: bool = (nm != null and int(nm.get("current_mode")) == NetworkManager.Mode.CLIENT)
 	var boss_tier: int = int(q.get_meta("boss_hull_tier", Contracts.ShipClass.BRIGANTINE))
 	if q.quest_type == Contracts.QuestType.BOUNTY:
-		var nm: Node = _get_network_manager()
-		if nm != null and int(nm.get("current_mode")) == NetworkManager.Mode.CLIENT:
+		if is_client:
 			if nm.has_method("send_bounty_quest_request"):
-				nm.call("send_bounty_quest_request", q.target_pos, q.cargo_item_id, boss_tier)
+				nm.call("send_bounty_quest_request", q.target_pos, q.cargo_item_id, boss_tier, q.id)
 		elif ai_director_ref != null:
 			q.target_ship_id = ai_director_ref.spawn_ai_ship(Contracts.ShipFaction.PIRATE, q.target_pos, true, q.cargo_item_id, boss_tier)
-	elif q.quest_type == Contracts.QuestType.SALVAGE and loot_system_ref != null:
-		var drop: Contracts.LootDropData = loot_system_ref.spawn_salvage_target(q.target_pos, q.id)
-		q.target_drop_id = drop.drop_id
-		q.target_pos = drop.world_pos
+	elif q.quest_type == Contracts.QuestType.SALVAGE:
+		if is_client:
+			if nm.has_method("send_salvage_quest_request"):
+				nm.call("send_salvage_quest_request", q.target_pos, q.id)
+		elif loot_system_ref != null:
+			var drop: Contracts.LootDropData = loot_system_ref.spawn_salvage_target(q.target_pos, q.id)
+			q.target_drop_id = drop.drop_id
+			q.target_pos = drop.world_pos
 
 	active_quests.append(q)
 	var bus := _bus()

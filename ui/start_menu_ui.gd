@@ -180,7 +180,7 @@ func _build_ui() -> void:
 	legend_style.content_margin_bottom = 6
 	legend_box.add_theme_stylebox_override("panel", legend_style)
 	vbox.add_child(legend_box)
-	legend_box.add_child(_make_label("WASD: Segel & Ruder  •  Q/E: Breitseite  •  I/Tab: Schiffs-Grid  •  F/Space: Hafen & Beute", 14, Color(0.84, 0.82, 0.75), HORIZONTAL_ALIGNMENT_CENTER))
+	legend_box.add_child(_make_label("WASD: Segel & Ruder  •  Q/E: Breitseite  •  Space: Bug  •  Tab/I: Schiffs-Grid  •  F: Hafen & Beute  •  M: Seekarte", 14, Color(0.84, 0.82, 0.75), HORIZONTAL_ALIGNMENT_CENTER))
 
 
 func _on_solo_btn_pressed() -> void:
