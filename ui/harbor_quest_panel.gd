@@ -1,6 +1,8 @@
 class_name HarborQuestPanel
 extends RefCounted
 ## Modular Harbor Quest generator & card builder helper for HarborUI.
+## Ensures DELIVERY quests only target the 3 safe harbors (has_harbor == true),
+## while BOUNTY and SALVAGE quests span the wider 7200x7200 sea with scaled boss tiers.
 
 const CAPTAINS: Array[String] = [
 	"Korsar Vane", "Rotbart Morgan", "Schwarze Anne", "Eisenkiefer Flint", "Käpt'n Blutsturm"
@@ -44,28 +46,47 @@ func make_quest_of_type(island_idx: int, q_type: int, rng: RandomNumberGenerator
 	match q_type:
 		Contracts.QuestType.BOUNTY:
 			var cap_name: String = CAPTAINS[rng.randi_range(0, CAPTAINS.size() - 1)]
+			var is_frigate: bool = rng.randf() < 0.35
+			var boss_tier: int = Contracts.ShipClass.FRIGATE if is_frigate else Contracts.ShipClass.BRIGANTINE
+			var class_word: String = "Fregatte" if is_frigate else "Brigg"
 			var spawn_dir := Vector2.from_angle(rng.randf_range(-PI, PI))
+			var raw_pos: Vector2 = src_isl.harbor_pos + spawn_dir * rng.randf_range(580.0, 1450.0)
+			raw_pos.x = clampf(raw_pos.x, -3000.0, 3000.0)
+			raw_pos.y = clampf(raw_pos.y, -3000.0, 3000.0)
 			q.title = "Jagd auf %s" % cap_name
-			q.description = "Versenke die gefürchtete Piraten-Brigg '%s' vor %s." % [cap_name, src_isl.name]
-			q.target_pos = find_water_cb.call(src_isl.harbor_pos + spawn_dir * rng.randf_range(360.0, 560.0))
-			q.reward_gold = rng.randi_range(160, 240)
+			q.description = "Versenke die gefürchtete Piraten-%s '%s' auf hoher See." % [class_word, cap_name]
+			q.target_pos = find_water_cb.call(raw_pos)
+			q.reward_gold = rng.randi_range(240, 340) if is_frigate else rng.randi_range(175, 260)
 			q.cargo_item_id = cap_name
+			q.set_meta("boss_hull_tier", boss_tier)
 		Contracts.QuestType.DELIVERY:
-			var target_idx: int = (island_idx + rng.randi_range(1, maxi(1, islands.size() - 1))) % islands.size()
-			var dst_isl: Contracts.IslandData = islands[target_idx]
-			q.target_island_idx = target_idx
+			var safe_targets: Array[Contracts.IslandData] = []
+			for isl_var in islands:
+				var isl: Contracts.IslandData = isl_var
+				if isl != null and isl.has_harbor and isl.index != island_idx:
+					safe_targets.append(isl)
+			if safe_targets.is_empty():
+				for isl_var in islands:
+					var isl: Contracts.IslandData = isl_var
+					if isl != null and isl.has_harbor:
+						safe_targets.append(isl)
+			var dst_isl: Contracts.IslandData = src_isl
+			if not safe_targets.is_empty():
+				dst_isl = safe_targets[rng.randi_range(0, safe_targets.size() - 1)]
+			q.target_island_idx = dst_isl.index
 			q.target_pos = dst_isl.harbor_pos
 			q.cargo_item_id = "spice_crates_1x2"
 			q.title = "Eilfracht nach %s" % dst_isl.name
 			q.description = "Liefere versiegelte Gewürzkisten sicher in den Hafen von %s." % dst_isl.name
-			q.reward_gold = rng.randi_range(115, 175)
+			q.reward_gold = rng.randi_range(135, 215)
 		Contracts.QuestType.SALVAGE:
 			var angle: float = rng.randf_range(-PI, PI)
-			var wreck_pos: Vector2 = find_water_cb.call(Vector2(cos(angle), sin(angle)) * rng.randf_range(260.0, 640.0))
+			var dist: float = rng.randf_range(520.0, 2350.0)
+			var wreck_pos: Vector2 = find_water_cb.call(Vector2(cos(angle), sin(angle)) * dist)
 			q.target_pos = wreck_pos
 			q.title = "Versunkenes Wrack bergen"
 			q.description = "Berge die verlorene Schatztruhe bei den Wrack-Koordinaten (%d, %d)." % [int(wreck_pos.x), int(wreck_pos.y)]
-			q.reward_gold = rng.randi_range(130, 195)
+			q.reward_gold = rng.randi_range(145, 240)
 	return q
 
 

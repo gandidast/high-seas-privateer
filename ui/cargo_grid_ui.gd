@@ -1,12 +1,10 @@
 class_name CargoGridUI
 extends Control
 ## Dredge-inspired 1280x720 HD ship cargo & rigging blueprint UI.
-## Uses CargoSlotRenderer + UIThemeHelper with TEXTURE_FILTER_NEAREST pixel-art
-## item icons and clean drag/drop/rotate interaction.
+## Supports dynamic grid sizes (6x4 .. 10x7) via CargoSlotRenderer with
+## TEXTURE_FILTER_NEAREST pixel-art item icons and clean drag/drop/rotate interaction.
 
 const PANEL_SIZE: Vector2 = CargoSlotRenderer.PANEL_SIZE
-const CELL_SIZE: float = CargoSlotRenderer.CELL_SIZE
-const GRID_OFFSET: Vector2 = CargoSlotRenderer.GRID_OFFSET
 const STASH_RECT_REL: Rect2 = CargoSlotRenderer.STASH_RECT_REL
 const STATS_RECT_REL: Rect2 = CargoSlotRenderer.STATS_RECT_REL
 const CLOSE_BTN_REL: Rect2 = CargoSlotRenderer.CLOSE_BTN_REL
@@ -223,16 +221,22 @@ func _get_vp_size() -> Vector2:
 
 
 func _get_grid_rect(panel_pos: Vector2) -> Rect2:
-	return Rect2(panel_pos + GRID_OFFSET, Vector2(float(DredgeGrid.GRID_WIDTH) * CELL_SIZE, float(DredgeGrid.GRID_HEIGHT) * CELL_SIZE))
+	var layout: Dictionary = CargoSlotRenderer.compute_grid_layout(dredge_grid)
+	return Rect2((panel_pos + (layout["origin"] as Vector2)).round(), layout["size"] as Vector2)
 
 
 func _screen_to_grid_cell(screen_pos: Vector2, panel_pos: Vector2) -> Vector2i:
-	var rel: Vector2 = screen_pos - (panel_pos + GRID_OFFSET)
+	var layout: Dictionary = CargoSlotRenderer.compute_grid_layout(dredge_grid)
+	var cols: int = int(layout["cols"])
+	var rows: int = int(layout["rows"])
+	var cell_sz: float = float(layout["cell_size"])
+	var grid_origin: Vector2 = (panel_pos + (layout["origin"] as Vector2)).round()
+	var rel: Vector2 = screen_pos - grid_origin
 	if rel.x < 0.0 or rel.y < 0.0:
 		return Vector2i(-1, -1)
-	var gx: int = int(floor(rel.x / CELL_SIZE))
-	var gy: int = int(floor(rel.y / CELL_SIZE))
-	if gx < 0 or gx >= DredgeGrid.GRID_WIDTH or gy < 0 or gy >= DredgeGrid.GRID_HEIGHT:
+	var gx: int = int(floor(rel.x / cell_sz))
+	var gy: int = int(floor(rel.y / cell_sz))
+	if gx < 0 or gx >= cols or gy < 0 or gy >= rows:
 		return Vector2i(-1, -1)
 	return Vector2i(gx, gy)
 
@@ -240,11 +244,14 @@ func _screen_to_grid_cell(screen_pos: Vector2, panel_pos: Vector2) -> Vector2i:
 func _get_drag_target_origin(screen_pos: Vector2, panel_pos: Vector2) -> Vector2i:
 	if _dragging_item == null:
 		return Vector2i(-1, -1)
+	var layout: Dictionary = CargoSlotRenderer.compute_grid_layout(dredge_grid)
+	var cell_sz: float = float(layout["cell_size"])
+	var grid_origin: Vector2 = (panel_pos + (layout["origin"] as Vector2)).round()
 	var eff_w: int = _dragging_item.height if _drag_rot else _dragging_item.width
 	var eff_h: int = _dragging_item.width if _drag_rot else _dragging_item.height
-	var rel: Vector2 = screen_pos - (panel_pos + GRID_OFFSET)
-	var top_left: Vector2 = rel - Vector2(float(eff_w) * CELL_SIZE * 0.5, float(eff_h) * CELL_SIZE * 0.5) + Vector2(CELL_SIZE * 0.5, CELL_SIZE * 0.5)
-	return Vector2i(int(floor(top_left.x / CELL_SIZE)), int(floor(top_left.y / CELL_SIZE)))
+	var rel: Vector2 = screen_pos - grid_origin
+	var top_left: Vector2 = rel - Vector2(float(eff_w) * cell_sz * 0.5, float(eff_h) * cell_sz * 0.5) + Vector2(cell_sz * 0.5, cell_sz * 0.5)
+	return Vector2i(int(floor(top_left.x / cell_sz)), int(floor(top_left.y / cell_sz)))
 
 
 func _get_stash_item_at(screen_pos: Vector2, panel_pos: Vector2) -> Contracts.GridItemData:
@@ -337,7 +344,8 @@ func _draw() -> void:
 	draw_rect(header_rect, UIThemeHelper.COL_HEADER_BG, true)
 	draw_line(Vector2(header_rect.position.x, header_rect.end.y), Vector2(header_rect.end.x, header_rect.end.y), UIThemeHelper.COL_BRASS_DIM, 1.5)
 
-	UIThemeHelper.draw_sharp_text(self, font, panel_pos + Vector2(18.0, 33.0), "SCHIFFS-BLAUPAUSE & FRACHT (8x6)", 20, UIThemeHelper.COL_GOLD)
+	var dims: Vector2i = CargoSlotRenderer.get_grid_dims(dredge_grid)
+	UIThemeHelper.draw_sharp_text(self, font, panel_pos + Vector2(18.0, 33.0), "SCHIFFS-BLAUPAUSE & FRACHT (%dx%d)" % [dims.x, dims.y], 20, UIThemeHelper.COL_GOLD)
 	UIThemeHelper.draw_sharp_text(self, font, panel_pos + Vector2(514.0, 33.0), "BEUTE-LAGER", 18, UIThemeHelper.COL_IVORY)
 	UIThemeHelper.draw_sharp_text(self, font, panel_pos + Vector2(786.0, 33.0), "SCHIFFSWERTE", 18, UIThemeHelper.COL_IVORY)
 

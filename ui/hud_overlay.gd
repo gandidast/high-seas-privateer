@@ -1,9 +1,9 @@
 class_name HudOverlay
 extends Control
 ## Crisp 1280x720+ HD nautical HUD (rendered outside the 640x360 SubViewport):
-## - Top-left: Ship class, gold, hull HP bar, 3-stage sail bar, Port/Starboard reload bars.
-## - Top-center: Weather, Royal Navy wanted stars, and active quest directional tracker.
-## - Top-right: Chart-style MinimapRenderer (static ocean/islands baked once per seed).
+## - Top-left: Ship class, gold, hull HP bar, 3-stage sail bar, Port/Starboard/Bow reload bars.
+## - Top-center: Weather, Royal Navy wanted stars, active quest directional tracker, death countdown banner.
+## - Top-right: Chart-style MinimapRenderer (click or [M] opens fullscreen WorldMapOverlay).
 ## - Bottom-center: Brass Compass & Windrose medallion with wind strength & heading readout.
 
 const DEFAULT_VIEWPORT_W: float = 1280.0
@@ -36,7 +36,12 @@ var _toast_text: String = ""
 var _toast_timer: float = 0.0
 var _pulse_time: float = 0.0
 
+var _death_active: bool = false
+var _death_gold_lost: int = 20
+var _death_countdown: float = 0.0
+
 var _minimap: MinimapRenderer = null
+var _world_map: WorldMapOverlay = null
 var _labels: HudLabelsView = HudLabelsView.new()
 var _hud_dirty: bool = true
 var _minimap_dirty: bool = true
@@ -50,6 +55,7 @@ var _last_max_hp: float = -1.0
 var _last_sail_state: int = -1
 var _last_port_ready: float = -1.0
 var _last_sb_ready: float = -1.0
+var _last_bow_ready: float = -1.0
 var _last_heading_q: float = -999.0
 var _last_wind_q: float = -999.0
 
@@ -71,12 +77,33 @@ func _ready() -> void:
 
 	_minimap = MinimapRenderer.new()
 	_minimap.name = "MinimapRenderer"
+	_minimap.world_map_toggle_requested.connect(toggle_world_map)
 	add_child(_minimap)
+
 	_labels.build(self)
+
+	_world_map = WorldMapOverlay.new()
+	_world_map.name = "WorldMapOverlay"
+	add_child(_world_map)
+
 	_sync_dynamic_layout()
 	_connect_signals()
-	_bake_minimap_from_world()
+	_bake_maps_from_world()
 	_mark_dirty(true, true)
+
+
+func toggle_world_map() -> void:
+	if _world_map != null:
+		_world_map.toggle_map()
+
+
+func set_world_map_open(open: bool) -> void:
+	if _world_map != null:
+		_world_map.set_open(open)
+
+
+func is_world_map_open() -> bool:
+	return _world_map != null and _world_map.visible
 
 
 func setup(
@@ -98,6 +125,8 @@ func setup(
 	_tracked_sea_monster.clear()
 	wanted_level = 0
 	current_weather = Contracts.WeatherState.CLEAR
+	_death_active = false
+	_death_countdown = 0.0
 
 	if world_map_ref != null:
 		var wd: Variant = world_map_ref.get("wind_direction")
@@ -112,12 +141,13 @@ func setup(
 			var f: Dictionary = combat_system_ref.forts[fid_var]
 			_tracked_forts[int(fid_var)] = {
 				"pos": f.get("world_pos", Vector2.ZERO),
-				"destroyed": bool(f.get("destroyed", false))
+				"destroyed": bool(f.get("destroyed", false)),
+				"island_index": int(f.get("island_index", -1))
 			}
 
 	_display_wind_angle = wind_dir.angle()
-	_bake_minimap_from_world()
-	_sync_minimap_refs()
+	_bake_maps_from_world()
+	_sync_map_refs()
 	_update_labels()
 	_mark_dirty(true, true)
 
@@ -126,6 +156,8 @@ func set_ships_dict(p_ships: Dictionary) -> void:
 	all_ships_ref = p_ships
 	if _minimap != null:
 		_minimap.all_ships_ref = p_ships
+	if _world_map != null:
+		_world_map.all_ships_ref = p_ships
 
 
 func _notification(what: int) -> void:
@@ -141,12 +173,37 @@ func _process(delta: float) -> void:
 
 	if player_ship != _last_player_ref:
 		_last_player_ref = player_ship
-		_sync_minimap_refs()
+		_sync_map_refs()
 		_mark_dirty(true, true)
 
 	if _get_hud_size() != _last_vp_size:
 		_sync_dynamic_layout()
 		_mark_dirty(true, true)
+
+	var is_sunk_now: bool = player_ship != null and bool(player_ship.get("is_sunk"))
+	if is_sunk_now:
+		if not _death_active:
+			_death_active = true
+			_death_gold_lost = 20
+			_death_countdown = 10.0
+			_hud_dirty = true
+		else:
+			var prev_sec: int = int(ceil(_death_countdown))
+			_death_countdown = maxf(0.0, _death_countdown - delta)
+			if int(ceil(_death_countdown)) != prev_sec:
+				_hud_dirty = true
+	elif _death_active:
+		if player_ship != null:
+			_death_active = false
+			_death_countdown = 0.0
+			_hud_dirty = true
+		else:
+			var prev_sec_null: int = int(ceil(_death_countdown))
+			_death_countdown = maxf(0.0, _death_countdown - delta)
+			if _death_countdown <= 0.0:
+				_death_active = false
+			if _death_active == false or int(ceil(_death_countdown)) != prev_sec_null:
+				_hud_dirty = true
 
 	var target_ang: float = wind_dir.angle()
 	var wind_moving: bool = absf(angle_difference(_display_wind_angle, target_ang)) > 0.004
@@ -164,9 +221,10 @@ func _process(delta: float) -> void:
 		toast_fading = (_toast_timer <= 0.0 or absf(new_alpha - prev_alpha) > 0.001)
 
 	var reloads := _read_broadside_ready()
-	var reloading: bool = (reloads.x < 0.999 or reloads.y < 0.999)
-	var reload_changed: bool = absf(reloads.x - _last_port_ready) > 0.006 or absf(reloads.y - _last_sb_ready) > 0.006
-	if (reload_changed and _anim_accum >= ANIM_REFRESH_INTERVAL) or (reloading and reload_changed and (reloads.x >= 0.999 or reloads.y >= 0.999)):
+	var bow_ready: float = _read_bow_ready()
+	var reloading: bool = (reloads.x < 0.999 or reloads.y < 0.999 or (bow_ready >= 0.0 and bow_ready < 0.999))
+	var reload_changed: bool = absf(reloads.x - _last_port_ready) > 0.006 or absf(reloads.y - _last_sb_ready) > 0.006 or absf(bow_ready - _last_bow_ready) > 0.006
+	if (reload_changed and _anim_accum >= ANIM_REFRESH_INTERVAL) or (reloading and reload_changed and (reloads.x >= 0.999 or reloads.y >= 0.999 or bow_ready >= 0.999)):
 		_anim_accum = 0.0
 		_hud_dirty = true
 	if toast_fading and (_toast_timer <= 0.0 or _anim_accum >= ANIM_REFRESH_INTERVAL):
@@ -181,10 +239,17 @@ func _process(delta: float) -> void:
 		_hud_dirty = false
 		_update_labels()
 		queue_redraw()
-	if _minimap_dirty and _minimap != null:
+	if _minimap_dirty:
 		_minimap_dirty = false
-		_minimap.pulse_time = _pulse_time
-		_minimap.queue_redraw()
+		if _minimap != null:
+			_minimap.pulse_time = _pulse_time
+			_minimap.queue_redraw()
+		if _world_map != null and _world_map.visible:
+			_world_map.pulse_time = _pulse_time
+			_world_map.queue_redraw()
+	elif _world_map != null and _world_map.visible and _periodic_accum == 0.0:
+		_world_map.pulse_time = _pulse_time
+		_world_map.queue_redraw()
 
 
 func _check_periodic_changes(wind_moving: bool) -> void:
@@ -221,6 +286,19 @@ func _read_broadside_ready() -> Vector2:
 	)
 
 
+func _read_bow_ready() -> float:
+	if player_ship == null:
+		return -1.0
+	var st: Variant = player_ship.get("stats")
+	var has_bow: bool = (st is Contracts.ShipStats) and not (st as Contracts.ShipStats).bow_cannons.is_empty()
+	if combat_system_ref != null and combat_system_ref.has_method("get_bow_cone"):
+		var sid: int = int(player_ship.get("ship_id"))
+		var bc: Dictionary = combat_system_ref.call("get_bow_cone", sid)
+		if int(bc.get("total_count", 0)) > 0:
+			return float(bc.get("ready_ratio", 0.0))
+	return 1.0 if has_bow else -1.0
+
+
 func _get_hud_size() -> Vector2:
 	var vp_size: Vector2 = get_viewport_rect().size
 	if vp_size.x <= 1.0 or vp_size.y <= 1.0: vp_size = size
@@ -229,8 +307,9 @@ func _get_hud_size() -> Vector2:
 
 
 func _get_top_bar_rect(vp_size: Vector2) -> Rect2:
-	var bar_w: float = minf(520.0, maxf(320.0, vp_size.x - 696.0))
-	var bar_x: float = clampf(round(vp_size.x * 0.5 - bar_w * 0.5), 436.0, maxf(436.0, vp_size.x - 248.0 - bar_w))
+	var right_limit: float = vp_size.x - MinimapRenderer.CARD_SIZE.x - 32.0
+	var bar_w: float = minf(520.0, maxf(260.0, right_limit - 436.0))
+	var bar_x: float = clampf(round(vp_size.x * 0.5 - bar_w * 0.5), 436.0, maxf(436.0, right_limit - bar_w))
 	return Rect2(bar_x, 16.0, bar_w, 44.0)
 
 
@@ -248,14 +327,16 @@ func _draw() -> void:
 
 
 func _draw_ship_panel() -> void:
-	UIThemeHelper.draw_chamfered_panel(self, Rect2(16.0, 16.0, 404.0, 156.0), UIThemeHelper.COL_HUD_PANEL_BG, UIThemeHelper.COL_BRASS, UIThemeHelper.COL_BRASS_DIM, 8.0)
+	var reloads := _read_broadside_ready()
+	var bow_ready: float = _read_bow_ready()
+	_last_port_ready = reloads.x; _last_sb_ready = reloads.y; _last_bow_ready = bow_ready
+
+	var panel_h: float = 178.0 if bow_ready >= 0.0 else 156.0
+	UIThemeHelper.draw_chamfered_panel(self, Rect2(16.0, 16.0, 404.0, panel_h), UIThemeHelper.COL_HUD_PANEL_BG, UIThemeHelper.COL_BRASS, UIThemeHelper.COL_BRASS_DIM, 8.0)
 	var hp: float = float(player_ship.get("hp")) if player_ship != null else 0.0
 	var max_hp: float = maxf(1.0, float(player_ship.get("max_hp"))) if player_ship != null else 120.0
 	var sail_state: int = int(player_ship.get("sail_state")) if player_ship != null else Contracts.SailState.ANCHORED
 	_last_hp = hp; _last_max_hp = max_hp; _last_sail_state = sail_state
-
-	var reloads := _read_broadside_ready()
-	_last_port_ready = reloads.x; _last_sb_ready = reloads.y
 
 	var hp_ratio: float = clampf(hp / max_hp, 0.0, 1.0)
 	var hp_col: Color = Color(0.28, 0.80, 0.44) if hp_ratio > 0.35 else Color(0.92, 0.28, 0.26)
@@ -274,6 +355,9 @@ func _draw_ship_panel() -> void:
 
 	UIThemeHelper.draw_progress_bar(self, Rect2(30.0, 140.0, 182.0, 14.0), reloads.x, UIThemeHelper.COL_GOLD if reloads.x >= 0.99 else Color(0.34, 0.64, 0.84), Color(0.11, 0.11, 0.16, 0.95), UIThemeHelper.COL_GOLD if reloads.x >= 0.99 else Color(0.34, 0.30, 0.25), 2.0)
 	UIThemeHelper.draw_progress_bar(self, Rect2(224.0, 140.0, 182.0, 14.0), reloads.y, UIThemeHelper.COL_GOLD if reloads.y >= 0.99 else Color(0.84, 0.44, 0.30), Color(0.11, 0.11, 0.16, 0.95), UIThemeHelper.COL_GOLD if reloads.y >= 0.99 else Color(0.34, 0.30, 0.25), 2.0)
+
+	if bow_ready >= 0.0:
+		UIThemeHelper.draw_progress_bar(self, Rect2(260.0, 165.0, 146.0, 14.0), bow_ready, UIThemeHelper.COL_GOLD if bow_ready >= 0.99 else Color(0.82, 0.62, 0.24), Color(0.11, 0.11, 0.16, 0.95), UIThemeHelper.COL_GOLD if bow_ready >= 0.99 else Color(0.34, 0.30, 0.25), 2.0)
 
 
 func _draw_quest_arrow(vp_size: Vector2) -> void:
@@ -327,6 +411,16 @@ func _draw_bottom_compass_and_windrose(vp_size: Vector2) -> void:
 
 
 func _draw_toast_and_harbor_bg(vp_size: Vector2) -> void:
+	if _death_active:
+		var death_w: float = minf(620.0, vp_size.x - 40.0)
+		UIThemeHelper.draw_chamfered_panel(
+			self,
+			Rect2(round(vp_size.x * 0.5 - death_w * 0.5), 132.0, death_w, 50.0),
+			Color(0.24, 0.06, 0.08, 0.95),
+			Color(0.96, 0.36, 0.30, 0.98),
+			UIThemeHelper.COL_GOLD,
+			8.0
+		)
 	if _toast_timer > 0.0 and not _toast_text.is_empty():
 		var alpha: float = clampf(_toast_timer, 0.0, 1.0)
 		var box_w: float = minf(620.0, vp_size.x - 40.0)
@@ -347,13 +441,28 @@ func _sync_dynamic_layout() -> void:
 	var vp_size: Vector2 = _get_hud_size()
 	_last_vp_size = vp_size
 	if _minimap != null:
-		_minimap.position = Vector2(vp_size.x - 232.0, 16.0).round()
+		_minimap.position = Vector2(vp_size.x - MinimapRenderer.CARD_SIZE.x - 16.0, 16.0).round()
 	_labels.sync_layout(vp_size, _get_top_bar_rect(vp_size), _get_compass_center(vp_size), COMPASS_RADIUS)
 
 
 func _update_labels() -> void:
 	var q_pos: Vector2 = _resolve_quest_target_pos(active_quests[0]) if not active_quests.is_empty() else Vector2.ZERO
-	_player_class_title = _labels.update(player_ship, _read_broadside_ready(), wind_strength, gold_amount, current_weather, wanted_level, active_quests, q_pos, current_harbor_idx, current_harbor_name)
+	_player_class_title = _labels.update(
+		player_ship,
+		_read_broadside_ready(),
+		wind_strength,
+		gold_amount,
+		current_weather,
+		wanted_level,
+		active_quests,
+		q_pos,
+		current_harbor_idx,
+		current_harbor_name,
+		_read_bow_ready(),
+		_death_active,
+		_death_gold_lost,
+		_death_countdown
+	)
 
 
 func _resolve_quest_target_pos(q: Contracts.QuestData) -> Vector2:
@@ -371,18 +480,27 @@ func _get_islands() -> Array:
 	return Contracts.get_islands()
 
 
-func _bake_minimap_from_world() -> void:
-	if _minimap == null: return
+func _bake_maps_from_world() -> void:
 	var seed_val: int = int(world_map_ref.get("world_seed")) if (world_map_ref != null and world_map_ref.get("world_seed") != null) else Contracts.DEFAULT_WORLD_SEED
-	_minimap.bake_static_map(seed_val, _get_islands())
+	var isls: Array = _get_islands()
+	if _minimap != null:
+		_minimap.bake_static_map(seed_val, isls)
+	if _world_map != null:
+		_world_map.bake_static_map(seed_val, isls)
 
 
-func _sync_minimap_refs() -> void:
-	if _minimap == null: return
-	_minimap.player_ship = player_ship; _minimap.combat_system_ref = combat_system_ref
-	_minimap.loot_system_ref = loot_system_ref; _minimap.all_ships_ref = all_ships_ref
-	_minimap.tracked_forts = _tracked_forts; _minimap.tracked_sea_monster = _tracked_sea_monster
-	_minimap.active_quests = active_quests
+func _sync_map_refs() -> void:
+	if _minimap != null:
+		_minimap.player_ship = player_ship; _minimap.combat_system_ref = combat_system_ref
+		_minimap.loot_system_ref = loot_system_ref; _minimap.all_ships_ref = all_ships_ref
+		_minimap.tracked_forts = _tracked_forts; _minimap.tracked_sea_monster = _tracked_sea_monster
+		_minimap.active_quests = active_quests
+	if _world_map != null:
+		_world_map.player_ship = player_ship; _world_map.combat_system_ref = combat_system_ref
+		_world_map.loot_system_ref = loot_system_ref; _world_map.all_ships_ref = all_ships_ref
+		_world_map.tracked_forts = _tracked_forts; _world_map.tracked_sea_monster = _tracked_sea_monster
+		_world_map.active_quests = active_quests
+		_world_map.islands_ref = _get_islands()
 
 
 func _connect_signals() -> void:
@@ -390,6 +508,7 @@ func _connect_signals() -> void:
 	if bus == null: return
 	bus.world_initialized.connect(func(ws: int, isls: Array) -> void:
 		if _minimap != null: _minimap.bake_static_map(ws, isls)
+		if _world_map != null: _world_map.bake_static_map(ws, isls)
 		_mark_dirty(true, true))
 	bus.wind_changed.connect(func(dir: Vector2, st: float) -> void: wind_dir = dir.normalized(); wind_strength = st; _mark_dirty(true, false))
 	bus.gold_changed.connect(func(ng: int, _d: int) -> void: gold_amount = ng; _mark_dirty(true, false))
@@ -400,16 +519,19 @@ func _connect_signals() -> void:
 	bus.quest_list_updated.connect(func(qs: Array) -> void:
 		active_quests = qs.duplicate()
 		if _minimap != null: _minimap.active_quests = active_quests
+		if _world_map != null: _world_map.active_quests = active_quests
 		_mark_dirty(true, true))
 	bus.quest_accepted.connect(func(q: Contracts.QuestData) -> void:
 		if q != null and not active_quests.has(q): active_quests.append(q)
 		if _minimap != null: _minimap.active_quests = active_quests
+		if _world_map != null: _world_map.active_quests = active_quests
 		_mark_dirty(true, true))
 	bus.quest_completed.connect(func(q: Contracts.QuestData) -> void:
 		if q == null: return
 		for i in range(active_quests.size() - 1, -1, -1):
 			if active_quests[i].id == q.id: active_quests.remove_at(i)
 		if _minimap != null: _minimap.active_quests = active_quests
+		if _world_map != null: _world_map.active_quests = active_quests
 		_mark_dirty(true, true))
 	bus.notification_posted.connect(func(msg: String, _cat: String) -> void:
 		_toast_text = msg; _toast_timer = 3.2
@@ -419,6 +541,12 @@ func _connect_signals() -> void:
 	bus.wanted_level_changed.connect(func(nl: int) -> void: wanted_level = nl; _mark_dirty(true, false))
 	bus.ship_class_upgraded.connect(func(sid: int, _t: int, ct: String) -> void:
 		if player_ship != null and sid == int(player_ship.get("ship_id")): _player_class_title = ct; _mark_dirty(true, false))
+	bus.player_death_penalty.connect(func(sid: int, gold_lost: int, respawn_sec: float) -> void:
+		if player_ship == null or sid == int(player_ship.get("ship_id")):
+			_death_active = true
+			_death_gold_lost = gold_lost
+			_death_countdown = maxf(0.0, respawn_sec)
+			_mark_dirty(true, false))
 	bus.broadside_fired.connect(func(sid: int, _sb: bool, _o: Vector2, _d: Vector2, _c: Array) -> void:
 		if player_ship != null and sid == int(player_ship.get("ship_id")): _mark_dirty(true, false))
 	bus.ship_repaired.connect(func(sid: int, _nhp: float, _mhp: float, _c: int) -> void:
@@ -429,14 +557,23 @@ func _connect_signals() -> void:
 	bus.loot_collected.connect(func(_did: int, _csid: int, _ld: Contracts.LootDropData) -> void: _mark_dirty(false, true))
 	bus.ship_spawned.connect(func(_sid: int, _sd: Dictionary) -> void: _mark_dirty(false, true))
 	bus.ship_despawned.connect(func(_sid: int) -> void: _mark_dirty(false, true))
-	bus.fort_spawned.connect(func(fid: int, wp: Vector2, _ii: int, _mhp: float) -> void: _tracked_forts[fid] = { "pos": wp, "destroyed": false }; _mark_dirty(false, true))
-	bus.fort_destroyed.connect(func(fid: int, wp: Vector2) -> void: _tracked_forts[fid] = { "pos": wp, "destroyed": true }; _mark_dirty(false, true))
+	bus.fort_spawned.connect(func(fid: int, wp: Vector2, ii: int, _mhp: float) -> void:
+		_tracked_forts[fid] = { "pos": wp, "destroyed": false, "island_index": ii }
+		_mark_dirty(false, true))
+	bus.fort_destroyed.connect(func(fid: int, wp: Vector2) -> void:
+		var prev_ii: int = int(_tracked_forts.get(fid, {}).get("island_index", -1))
+		_tracked_forts[fid] = { "pos": wp, "destroyed": true, "island_index": prev_ii }
+		_mark_dirty(false, true))
 	bus.sea_monster_spawned.connect(func(mid: int, wp: Vector2, mhp: float) -> void:
 		_tracked_sea_monster = { "monster_id": mid, "pos": wp, "hp": mhp, "max_hp": mhp, "active": true }
 		if _minimap != null: _minimap.tracked_sea_monster = _tracked_sea_monster
+		if _world_map != null: _world_map.tracked_sea_monster = _tracked_sea_monster
 		_mark_dirty(false, true))
 	bus.sea_monster_updated.connect(func(mid: int, wp: Vector2, hp: float, mhp: float, _ph: int) -> void:
 		_tracked_sea_monster = { "monster_id": mid, "pos": wp, "hp": hp, "max_hp": mhp, "active": hp > 0.0 }
 		if _minimap != null: _minimap.tracked_sea_monster = _tracked_sea_monster
+		if _world_map != null: _world_map.tracked_sea_monster = _tracked_sea_monster
 		_mark_dirty(false, true))
-	bus.sea_monster_defeated.connect(func(_mid: int, _wp: Vector2) -> void: _tracked_sea_monster["active"] = false; _mark_dirty(false, true))
+	bus.sea_monster_defeated.connect(func(_mid: int, _wp: Vector2) -> void:
+		_tracked_sea_monster["active"] = false
+		_mark_dirty(false, true))

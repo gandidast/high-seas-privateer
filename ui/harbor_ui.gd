@@ -1,24 +1,26 @@
 class_name HarborUI
 extends Control
-## Safe Harbor UI for ship repair, 3-tier Shipyard class upgrades (Sloop ->
-## Brigantine -> Heavy Frigate), rotating Armory equipment shop, selling
-## loot/cargo with affix bonuses, and 3-slot Harbor Quests.
-
-const BRIG_COST: int = 250
-const FRIGATE_COST: int = 550
+## Safe Harbor UI for ship repair, 6-Class Shipyard Roster (unlock & free switch),
+## rotating Armory equipment shop (auto-refreshes on new port / cooldown),
+## selling loot/cargo with affix bonuses, and 3-slot Harbor Quests.
 
 var player_ship: Node = null
 var player_grid: Node = null
 var world_map_ref: Node = null
 var ai_director_ref: AIDirector = null
 var loot_system_ref: LootSystem = null
+var network_manager_ref: Node = null
 
 var current_island_index: int = -1
 var current_gold: int = 120
+var owned_ship_tiers: Dictionary = { Contracts.ShipClass.SLOOP: true }
 var harbor_quests: Dictionary = {}   # island_idx (int) -> Array[Contracts.QuestData]
 var harbor_shops: Dictionary = {}    # island_idx (int) -> Array[Dictionary]
+var shop_refresh_times: Dictionary = {} # island_idx (int) -> float (sec)
 var active_quests: Array[Contracts.QuestData] = []
 
+var _last_shop_island_idx: int = -1
+var _shop_just_refreshed: bool = false
 var _active_left_tab: String = "shop"
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _shop_panel: HarborShopPanel = HarborShopPanel.new()
@@ -33,11 +35,11 @@ var _class_label: Label = null
 var _hp_label: Label = null
 var _hp_bar: ProgressBar = null
 var _repair_btn: Button = null
-var _brig_btn: Button = null
-var _frigate_btn: Button = null
+var _class_btns: Dictionary = {} # tier (int) -> Button
 var _tab_shop_btn: Button = null
 var _tab_sell_btn: Button = null
 var _sell_all_btn: Button = null
+var _shop_hint_label: Label = null
 var _shop_scroll: ScrollContainer = null
 var _sell_scroll: ScrollContainer = null
 var _shop_list: VBoxContainer = null
@@ -50,6 +52,20 @@ func _bus() -> Contracts:
 	if st != null and st.root != null:
 		return st.root.get_node_or_null("EventBus") as Contracts
 	return null
+
+
+func _get_network_manager() -> Node:
+	if is_instance_valid(network_manager_ref):
+		return network_manager_ref
+	if is_inside_tree() and get_tree() != null and get_tree().root != null:
+		return get_tree().root.get_node_or_null("Main/NetworkManager")
+	return null
+
+
+func _sync_network_harbor_state(is_open: bool) -> void:
+	var nm: Node = _get_network_manager()
+	if nm != null and int(nm.get("current_mode")) == NetworkManager.Mode.CLIENT and nm.has_method("send_harbor_ui_state"):
+		nm.call("send_harbor_ui_state", is_open)
 
 
 func _ready() -> void:
@@ -79,6 +95,8 @@ func setup(
 	ai_director_ref = p_ai_director
 	loot_system_ref = p_loot_system
 	current_gold = p_starting_gold
+	owned_ship_tiers = { Contracts.ShipClass.SLOOP: true }
+	owned_ship_tiers[_get_player_hull_tier()] = true
 	_refresh_ui()
 
 
@@ -88,19 +106,48 @@ func set_gold(new_gold: int) -> void:
 
 
 func open_harbor(island_index: int) -> void:
+	var islands: Array = _get_islands()
+	if island_index < 0 or island_index >= islands.size():
+		return
+	var isl: Contracts.IslandData = islands[island_index]
+	if isl != null and not isl.has_harbor:
+		var bus := _bus()
+		if bus != null:
+			bus.notification_posted.emit("'%s' besitzt keinen sicheren Hafen!" % isl.name, "harbor")
+		return
+
 	current_island_index = island_index
 	if not harbor_quests.has(island_index):
-		_quest_panel.generate_harbor_quests(island_index, harbor_quests, _rng, _get_islands(), _find_water_pos)
-	if not harbor_shops.has(island_index):
+		_quest_panel.generate_harbor_quests(island_index, harbor_quests, _rng, islands, _find_water_pos)
+
+	var now_sec: float = float(Time.get_ticks_msec()) * 0.001
+	var first_gen: bool = not harbor_shops.has(island_index)
+	var visited_other: bool = (_last_shop_island_idx >= 0 and _last_shop_island_idx != island_index)
+	var cooldown_elapsed: bool = (now_sec - float(shop_refresh_times.get(island_index, 0.0))) >= HarborShopPanel.SHOP_REFRESH_COOLDOWN_SEC
+
+	_shop_just_refreshed = false
+	if first_gen or visited_other or cooldown_elapsed:
 		_shop_panel.generate_harbor_shop(island_index, harbor_shops, _rng)
+		shop_refresh_times[island_index] = now_sec
+		_shop_just_refreshed = true
+		if visited_other or (not first_gen and cooldown_elapsed):
+			var bus := _bus()
+			if bus != null:
+				bus.notification_posted.emit("Frische Hafenlieferung verfügbar!", "trade")
+	_last_shop_island_idx = island_index
+
 	visible = true
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	_sync_network_harbor_state(true)
 	_refresh_ui()
 
 
 func close_harbor() -> void:
+	var was_open: bool = visible
 	visible = false
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if was_open:
+		_sync_network_harbor_state(false)
 
 
 func get_active_quests() -> Array[Contracts.QuestData]:
@@ -144,6 +191,7 @@ func _connect_signals() -> void:
 	bus.ship_sunk.connect(_on_ship_sunk)
 	bus.loot_collected.connect(_on_loot_collected)
 	bus.ship_grid_updated.connect(_on_ship_grid_updated)
+	bus.player_death_penalty.connect(_on_player_death_penalty)
 
 
 func _build_ui() -> void:
@@ -156,8 +204,8 @@ func _build_ui() -> void:
 	_panel = PanelContainer.new()
 	_panel.anchor_left = 0.5; _panel.anchor_top = 0.5
 	_panel.anchor_right = 0.5; _panel.anchor_bottom = 0.5
-	_panel.offset_left = -540.0; _panel.offset_top = -300.0
-	_panel.offset_right = 540.0; _panel.offset_bottom = 300.0
+	_panel.offset_left = -560.0; _panel.offset_top = -325.0
+	_panel.offset_right = 560.0; _panel.offset_bottom = 325.0
 	_panel.add_theme_stylebox_override("panel", UIThemeHelper.make_box_style(UIThemeHelper.COL_PANEL_BG, UIThemeHelper.COL_BRASS, 8, 2, 12))
 	add_child(_panel)
 
@@ -172,7 +220,7 @@ func _build_ui() -> void:
 	root_vbox.add_child(body)
 
 	var left_col := VBoxContainer.new()
-	left_col.custom_minimum_size = Vector2(520.0, 0.0)
+	left_col.custom_minimum_size = Vector2(560.0, 0.0)
 	left_col.add_theme_constant_override("separation", 10)
 	body.add_child(left_col)
 
@@ -218,10 +266,10 @@ func _build_shipyard_card(left_col: VBoxContainer) -> void:
 
 	var yard_top := HBoxContainer.new()
 	yard_vbox.add_child(yard_top)
-	var yard_title := UIThemeHelper.make_label("WERFT & AUSBAU", 18, UIThemeHelper.COL_GOLD)
+	var yard_title := UIThemeHelper.make_label("WERFT & FLOTTEN-ROSTER (6 KLASSEN)", 17, UIThemeHelper.COL_GOLD)
 	yard_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	yard_top.add_child(yard_title)
-	_class_label = UIThemeHelper.make_label("Schaluppe (Tier 0)", 15, UIThemeHelper.COL_TURQUOISE)
+	_class_label = UIThemeHelper.make_label("Schaluppe (6x4)", 15, UIThemeHelper.COL_TURQUOISE)
 	yard_top.add_child(_class_label)
 
 	var rep_row := HBoxContainer.new()
@@ -249,21 +297,53 @@ func _build_shipyard_card(left_col: VBoxContainer) -> void:
 	_repair_btn.pressed.connect(_on_repair_pressed)
 	rep_row.add_child(_repair_btn)
 
-	var class_row := HBoxContainer.new()
-	class_row.add_theme_constant_override("separation", 10)
-	yard_vbox.add_child(class_row)
+	var class_grid := GridContainer.new()
+	class_grid.columns = 2
+	class_grid.add_theme_constant_override("h_separation", 8)
+	class_grid.add_theme_constant_override("v_separation", 6)
+	yard_vbox.add_child(class_grid)
 
-	_brig_btn = UIThemeHelper.make_button("Brigg (250 G)", Color(0.20, 0.30, 0.42), 15)
-	_brig_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_brig_btn.tooltip_text = "Tier 1: 190 Basis-HP, 2 Masten, 70 Tragkraft"
-	_brig_btn.pressed.connect(_upgrade_ship_to_tier.bind(Contracts.ShipClass.BRIGANTINE, BRIG_COST))
-	class_row.add_child(_brig_btn)
+	var tier_colors: Dictionary = {
+		Contracts.ShipClass.SLOOP: Color(0.20, 0.28, 0.36),
+		Contracts.ShipClass.SCHOONER: Color(0.18, 0.34, 0.38),
+		Contracts.ShipClass.BRIGANTINE: Color(0.20, 0.30, 0.44),
+		Contracts.ShipClass.FRIGATE: Color(0.30, 0.22, 0.42),
+		Contracts.ShipClass.CORSAIR_CLIPPER: Color(0.42, 0.24, 0.18),
+		Contracts.ShipClass.WAR_GALLEON: Color(0.38, 0.28, 0.14)
+	}
+	var tier_notes: Dictionary = {
+		Contracts.ShipClass.SLOOP: "Starter",
+		Contracts.ShipClass.CORSAIR_CLIPPER: "Schnellster Jäger (+15% Reload)",
+		Contracts.ShipClass.WAR_GALLEON: "Schweres Schlachtschiff"
+	}
 
-	_frigate_btn = UIThemeHelper.make_button("Fregatte (550 G)", Color(0.32, 0.22, 0.40), 15)
-	_frigate_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_frigate_btn.tooltip_text = "Tier 2: 280 Basis-HP, +4 Rüstung, 3 Masten, 105 Tragkraft"
-	_frigate_btn.pressed.connect(_upgrade_ship_to_tier.bind(Contracts.ShipClass.FRIGATE, FRIGATE_COST))
-	class_row.add_child(_frigate_btn)
+	_class_btns.clear()
+	for tier in range(6):
+		var spec: Dictionary = Contracts.get_ship_class_spec(tier)
+		var cname: String = str(spec.get("name", "Schiff"))
+		var cols: int = int(spec.get("grid_cols", 6))
+		var rows: int = int(spec.get("grid_rows", 4))
+		var cost: int = int(spec.get("cost", 0))
+		var note: String = str(tier_notes.get(tier, ""))
+
+		var btn := UIThemeHelper.make_button("%s (%dx%d)" % [cname, cols, rows], tier_colors.get(tier, Color(0.22, 0.28, 0.38)), 14)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.custom_minimum_size = Vector2(0.0, 32.0)
+		var tip := "Tier %d • %dx%d Grid • %.0f HP • %.0f kn • %.1f Rüstung • %.0f kg" % [
+			tier, cols, rows,
+			float(spec.get("base_hp", 120.0)),
+			float(spec.get("base_speed", 95.0)),
+			float(spec.get("armor", 0.0)),
+			float(spec.get("max_weight", 45.0))
+		]
+		if not note.is_empty():
+			tip += " • %s" % note
+		if cost > 0:
+			tip += " • Preis: %d G (Wechsel danach kostenlos)" % cost
+		btn.tooltip_text = tip
+		btn.pressed.connect(_select_or_buy_ship_tier.bind(tier))
+		class_grid.add_child(btn)
+		_class_btns[tier] = btn
 
 
 func _build_trade_card(left_col: VBoxContainer) -> void:
@@ -293,6 +373,9 @@ func _build_trade_card(left_col: VBoxContainer) -> void:
 	_sell_all_btn = UIThemeHelper.make_button("Alles verkaufen", Color(0.46, 0.32, 0.14), 15)
 	_sell_all_btn.pressed.connect(_on_sell_all_cargo_pressed)
 	tab_row.add_child(_sell_all_btn)
+
+	_shop_hint_label = UIThemeHelper.make_label("Frische Hafenlieferung verfügbar!", 14, Color(0.46, 0.90, 0.58))
+	trade_vbox.add_child(_shop_hint_label)
 
 	_shop_scroll = ScrollContainer.new()
 	_shop_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -350,6 +433,7 @@ func _switch_left_tab(tab_name: String) -> void:
 	_active_left_tab = tab_name
 	var is_shop: bool = (tab_name == "shop")
 	if _shop_scroll != null: _shop_scroll.visible = is_shop
+	if _shop_hint_label != null: _shop_hint_label.visible = is_shop
 	if _sell_scroll != null: _sell_scroll.visible = not is_shop
 	if _sell_all_btn != null: _sell_all_btn.visible = not is_shop
 	if _tab_shop_btn != null: _tab_shop_btn.add_theme_stylebox_override("normal", _tab_active_style if is_shop else _tab_inactive_style)
@@ -358,9 +442,24 @@ func _switch_left_tab(tab_name: String) -> void:
 
 func _refresh_ui() -> void:
 	_refresh_header_and_shipyard()
+	_refresh_shop_hint()
 	_shop_panel.refresh_shop_list(_shop_list, harbor_shops.get(current_island_index, []), current_gold, _buy_shop_item)
 	_shop_panel.refresh_sell_list(_sell_list, _tab_sell_btn, player_grid, _sell_single_item)
 	_refresh_quest_list()
+
+
+func _refresh_shop_hint() -> void:
+	if _shop_hint_label == null:
+		return
+	var now_sec: float = float(Time.get_ticks_msec()) * 0.001
+	var last_t: float = float(shop_refresh_times.get(current_island_index, now_sec))
+	var remaining: float = maxf(0.0, HarborShopPanel.SHOP_REFRESH_COOLDOWN_SEC - (now_sec - last_t))
+	if _shop_just_refreshed or remaining <= 0.5:
+		_shop_hint_label.text = "Frische Hafenlieferung verfügbar!"
+		_shop_hint_label.add_theme_color_override("font_color", Color(0.46, 0.90, 0.58))
+	else:
+		_shop_hint_label.text = "Nächste Lieferung in %ds (oder anderen sicheren Hafen anlaufen)" % int(ceil(remaining))
+		_shop_hint_label.add_theme_color_override("font_color", UIThemeHelper.COL_MUTED)
 
 
 func _refresh_quest_list() -> void:
@@ -383,9 +482,8 @@ func _get_player_hull_tier() -> int:
 
 
 func _get_class_name(tier: int) -> String:
-	if tier == Contracts.ShipClass.BRIGANTINE: return "Brigg (Tier 1)"
-	if tier == Contracts.ShipClass.FRIGATE: return "Fregatte (Tier 2)"
-	return "Schaluppe (Tier 0)"
+	var spec: Dictionary = Contracts.get_ship_class_spec(tier)
+	return "%s (%dx%d)" % [str(spec.get("name", "Schaluppe")), int(spec.get("grid_cols", 6)), int(spec.get("grid_rows", 4))]
 
 
 func _refresh_header_and_shipyard() -> void:
@@ -397,14 +495,30 @@ func _refresh_header_and_shipyard() -> void:
 	_title_label.text = "HAFEN: %s" % island_name.to_upper()
 	_gold_label.text = "%d Gold" % current_gold
 
-	var tier: int = _get_player_hull_tier()
-	_class_label.text = _get_class_name(tier)
-	if _brig_btn != null:
-		_brig_btn.text = "Brigg ✓" if tier >= Contracts.ShipClass.BRIGANTINE else "Brigg (%d G)" % BRIG_COST
-		_brig_btn.disabled = tier >= Contracts.ShipClass.BRIGANTINE or current_gold < BRIG_COST
-	if _frigate_btn != null:
-		_frigate_btn.text = "Fregatte ✓" if tier >= Contracts.ShipClass.FRIGATE else "Fregatte (%d G)" % FRIGATE_COST
-		_frigate_btn.disabled = tier >= Contracts.ShipClass.FRIGATE or current_gold < FRIGATE_COST
+	var current_tier: int = _get_player_hull_tier()
+	owned_ship_tiers[current_tier] = true
+	_class_label.text = _get_class_name(current_tier)
+
+	for tier_var in _class_btns.keys():
+		var tier: int = int(tier_var)
+		var btn: Button = _class_btns[tier_var]
+		if btn == null:
+			continue
+		var spec: Dictionary = Contracts.get_ship_class_spec(tier)
+		var cname: String = str(spec.get("name", "Schiff"))
+		var cols: int = int(spec.get("grid_cols", 6))
+		var rows: int = int(spec.get("grid_rows", 4))
+		var cost: int = int(spec.get("cost", 0))
+		var is_owned: bool = bool(owned_ship_tiers.get(tier, cost <= 0))
+		if tier == current_tier:
+			btn.text = "★ %s (%dx%d)" % [cname, cols, rows]
+			btn.disabled = true
+		elif is_owned:
+			btn.text = "%s (%dx%d) • Wählen" % [cname, cols, rows]
+			btn.disabled = false
+		else:
+			btn.text = "%s (%dx%d) • %d G" % [cname, cols, rows, cost]
+			btn.disabled = current_gold < cost
 
 	if player_ship != null:
 		var hp: float = float(player_ship.get("hp"))
@@ -422,23 +536,50 @@ func _refresh_header_and_shipyard() -> void:
 		_repair_btn.disabled = true
 
 
-func _upgrade_ship_to_tier(new_tier: int, cost: int) -> void:
-	if new_tier <= _get_player_hull_tier() or current_gold < cost:
+func _select_or_buy_ship_tier(new_tier: int) -> void:
+	var current_tier: int = _get_player_hull_tier()
+	if new_tier == current_tier:
 		return
-	_add_gold(-cost)
-	if player_ship != null and player_ship.has_method("upgrade_ship_class"):
-		player_ship.call("upgrade_ship_class", new_tier)
+	var spec: Dictionary = Contracts.get_ship_class_spec(new_tier)
+	var is_owned: bool = bool(owned_ship_tiers.get(new_tier, int(spec.get("cost", 0)) <= 0))
+	var cost: int = 0 if is_owned else int(spec.get("cost", 0))
+	if not is_owned and current_gold < cost:
+		return
+
+	if cost > 0:
+		_add_gold(-cost)
+	owned_ship_tiers[new_tier] = true
+
+	var stash_before: int = 0
+	if player_grid != null and player_grid.get("stash_items") is Array:
+		stash_before = (player_grid.get("stash_items") as Array).size()
+
 	if player_grid != null and player_grid.has_method("set_hull_tier"):
 		player_grid.call("set_hull_tier", new_tier)
+	if player_ship != null and player_ship.has_method("upgrade_ship_class"):
+		player_ship.call("upgrade_ship_class", new_tier)
 	if player_grid != null and player_grid.has_method("compile_stats"):
 		var new_stats: Contracts.ShipStats = player_grid.call("compile_stats")
 		if player_ship != null and player_ship.has_method("apply_stats"):
 			player_ship.call("apply_stats", new_stats)
 			player_ship.set("hp", new_stats.max_hp)
+
+	var moved_to_stash: int = 0
+	if player_grid != null and player_grid.get("stash_items") is Array:
+		moved_to_stash = maxi(0, (player_grid.get("stash_items") as Array).size() - stash_before)
+
 	var bus := _bus()
 	if bus != null:
-		bus.notification_posted.emit("Werft: Schiff zur %s aufgerüstet!" % _get_class_name(new_tier), "harbor")
+		var cname: String = str(spec.get("name", "Schiff"))
+		var msg: String = "Werft: %s gekauft & ausgerüstet!" % cname if not is_owned else "Werft: Auf %s gewechselt!" % cname
+		if moved_to_stash > 0:
+			msg += " (%d überschüssige Items im Lager)" % moved_to_stash
+		bus.notification_posted.emit(msg, "harbor")
 	_refresh_ui()
+
+
+func _upgrade_ship_to_tier(new_tier: int, _cost: int) -> void:
+	_select_or_buy_ship_tier(new_tier)
 
 
 func _buy_shop_item(entry: Dictionary) -> void:
@@ -459,8 +600,14 @@ func _on_sell_all_cargo_pressed() -> void:
 func _accept_quest(q: Contracts.QuestData) -> void:
 	if _is_quest_active(q.id):
 		return
-	if q.quest_type == Contracts.QuestType.BOUNTY and ai_director_ref != null:
-		q.target_ship_id = ai_director_ref.spawn_ai_ship(Contracts.ShipFaction.PIRATE, q.target_pos, true, q.cargo_item_id)
+	var boss_tier: int = int(q.get_meta("boss_hull_tier", Contracts.ShipClass.BRIGANTINE))
+	if q.quest_type == Contracts.QuestType.BOUNTY:
+		var nm: Node = _get_network_manager()
+		if nm != null and int(nm.get("current_mode")) == NetworkManager.Mode.CLIENT:
+			if nm.has_method("send_bounty_quest_request"):
+				nm.call("send_bounty_quest_request", q.target_pos, q.cargo_item_id, boss_tier)
+		elif ai_director_ref != null:
+			q.target_ship_id = ai_director_ref.spawn_ai_ship(Contracts.ShipFaction.PIRATE, q.target_pos, true, q.cargo_item_id, boss_tier)
 	elif q.quest_type == Contracts.QuestType.SALVAGE and loot_system_ref != null:
 		var drop: Contracts.LootDropData = loot_system_ref.spawn_salvage_target(q.target_pos, q.id)
 		q.target_drop_id = drop.drop_id
@@ -558,6 +705,14 @@ func _on_harbor_exited(ship_id: int, _island_index: int) -> void:
 func _on_gold_changed(new_gold: int, _delta: int) -> void:
 	current_gold = new_gold
 	if visible: _refresh_header_and_shipyard()
+
+
+func _on_player_death_penalty(ship_id: int, gold_lost: int, _respawn_seconds: float) -> void:
+	if player_ship == null or ship_id == int(player_ship.get("ship_id")):
+		if gold_lost > 0:
+			_add_gold(-gold_lost)
+		if visible:
+			close_harbor()
 
 
 func _on_ship_sunk(ship_id: int, _world_pos: Vector2, _faction: int, _killer_ship_id: int) -> void:

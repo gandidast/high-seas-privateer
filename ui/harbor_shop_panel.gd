@@ -4,7 +4,14 @@ extends RefCounted
 ## Caches NEAREST pixel-art item icons and uses UIThemeHelper for styling.
 
 const ITEM_DB_PATH: String = "res://sim/item_database.gd"
+const SHOP_OFFER_COUNT: int = 5
+const SHOP_REFRESH_COOLDOWN_SEC: float = 75.0
 const SHOP_ITEM_POOL: Array[String] = [
+	"carronade_2x1",
+	"organ_gun_2x2",
+	"twin_cannon_2x3",
+	"pitch_mortar_2x2",
+	"bow_chaser_1x2",
 	"greek_fire_2x1",
 	"harpoon_ballista_2x1",
 	"gunner_quarters_2x2",
@@ -32,11 +39,11 @@ func _init() -> void:
 	_sell_card_style = UIThemeHelper.make_box_style(UIThemeHelper.COL_PANEL_CARD_INNER, Color(0.32, 0.28, 0.22, 0.70), 5, 1, 6)
 
 
-func create_shop_item(item_id: String) -> Contracts.GridItemData:
+func create_shop_item(item_id: String, affix: int = Contracts.ItemAffix.STANDARD) -> Contracts.GridItemData:
 	if _item_db_script == null and ResourceLoader.exists(ITEM_DB_PATH):
 		_item_db_script = load(ITEM_DB_PATH) as Script
 	if _item_db_script != null:
-		var item: Variant = _item_db_script.call("create_item", item_id, Contracts.ItemAffix.STANDARD)
+		var item: Variant = _item_db_script.call("create_item", item_id, affix)
 		if item is Contracts.GridItemData:
 			return item
 	return null
@@ -45,17 +52,19 @@ func create_shop_item(item_id: String) -> Contracts.GridItemData:
 func generate_harbor_shop(island_idx: int, harbor_shops: Dictionary, rng: RandomNumberGenerator) -> void:
 	var pool: Array[String] = SHOP_ITEM_POOL.duplicate()
 	var offer: Array[Dictionary] = []
-	for _i in range(4):
+	for _i in range(SHOP_OFFER_COUNT):
 		if pool.is_empty():
 			break
 		var pick_idx: int = rng.randi_range(0, pool.size() - 1)
 		var item_id: String = pool[pick_idx]
 		pool.remove_at(pick_idx)
-		var item: Contracts.GridItemData = create_shop_item(item_id)
+		var affix: int = Contracts.ItemAffix.MASTERWORK if rng.randf() < 0.24 else Contracts.ItemAffix.STANDARD
+		var item: Contracts.GridItemData = create_shop_item(item_id, affix)
 		if item != null:
 			var price: int = maxi(85, item.get_effective_gold_value() + 30)
 			offer.append({
 				"item_id": item_id,
+				"affix": affix,
 				"item": item,
 				"price": price,
 				"sold": false
@@ -121,7 +130,8 @@ func refresh_shop_list(shop_list: VBoxContainer, offers: Array, current_gold: in
 		info_col.add_theme_constant_override("separation", 3)
 		row.add_child(info_col)
 
-		info_col.add_child(UIThemeHelper.make_label("%s (%dx%d)" % [item.name, item.width, item.height], 16, UIThemeHelper.COL_GOLD))
+		var name_col: Color = UIThemeHelper.affix_color(item.affix, item.rarity) if item.affix != Contracts.ItemAffix.STANDARD else UIThemeHelper.COL_GOLD
+		info_col.add_child(UIThemeHelper.make_label("%s (%dx%d)" % [item.get_display_name(), item.width, item.height], 15, name_col))
 		var desc: Label = UIThemeHelper.make_label(item.description, 14, UIThemeHelper.COL_MUTED)
 		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info_col.add_child(desc)
@@ -201,7 +211,8 @@ func buy_shop_item(entry: Dictionary, player_grid: Node, current_gold: int, add_
 	if current_gold < price:
 		return false
 
-	var bought_item: Contracts.GridItemData = create_shop_item(str(entry.get("item_id", "")))
+	var affix: int = int(entry.get("affix", Contracts.ItemAffix.STANDARD))
+	var bought_item: Contracts.GridItemData = create_shop_item(str(entry.get("item_id", "")), affix)
 	if bought_item == null:
 		return false
 
@@ -215,7 +226,7 @@ func buy_shop_item(entry: Dictionary, player_grid: Node, current_gold: int, add_
 		player_grid.call("add_to_stash", bought_item)
 
 	if bus != null:
-		var msg: String = "%s gekauft & ausgerüstet!" % bought_item.name if placed else "%s gekauft (im Lager abgelegt)." % bought_item.name
+		var msg: String = "%s gekauft & ausgerüstet!" % bought_item.get_display_name() if placed else "%s gekauft (im Lager abgelegt)." % bought_item.get_display_name()
 		bus.notification_posted.emit(msg, "trade")
 	return true
 

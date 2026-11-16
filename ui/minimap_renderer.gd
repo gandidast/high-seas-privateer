@@ -1,15 +1,17 @@
 class_name MinimapRenderer
 extends Control
 ## Crisp chart-style Minimap widget for HudOverlay.
-## Bakes static ocean, crosshairs, 6 deterministic islands, and harbor icons
-## ONCE per world_seed into a cached ImageTexture, then draws dynamic blips only.
+## Covers the full 7200x7200 world, distinguishes 3 Safe Harbors from 5 Wild Islands,
+## bakes static ocean/islands once per seed, and toggles WorldMapOverlay on click.
 
-const CARD_SIZE: Vector2 = Vector2(216.0, 268.0)
-const MAP_RECT: Rect2 = Rect2(12.0, 12.0, 192.0, 184.0)
-const MAP_W: int = 192
-const MAP_H: int = 184
-const SCALE_F: float = (192.0 * 0.46) / 1150.0
-const MAP_CENTER: Vector2 = Vector2(96.0, 92.0)
+signal world_map_toggle_requested
+
+const CARD_SIZE: Vector2 = Vector2(270.0, 316.0)
+const MAP_RECT: Rect2 = Rect2(11.0, 11.0, 248.0, 240.0)
+const MAP_W: int = 248
+const MAP_H: int = 240
+const SCALE_F: float = 118.0 / Contracts.WORLD_HALF_EXTENT
+const MAP_CENTER: Vector2 = Vector2(124.0, 120.0)
 
 var player_ship: Node = null
 var combat_system_ref: CombatSystem = null
@@ -29,12 +31,21 @@ var _kraken_poly: PackedVector2Array = PackedVector2Array([Vector2.ZERO, Vector2
 
 
 func _ready() -> void:
-	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mouse_filter = Control.MOUSE_FILTER_STOP
+	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	custom_minimum_size = CARD_SIZE
 	size = CARD_SIZE
 	_ensure_icons()
 	_build_legend_labels()
+
+
+func _gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+			world_map_toggle_requested.emit()
+			accept_event()
 
 
 func bake_static_map(world_seed: int, islands: Array) -> void:
@@ -57,27 +68,41 @@ func bake_static_map(world_seed: int, islands: Array) -> void:
 		if isl == null:
 			continue
 		var ic: Vector2 = MAP_CENTER + isl.center * SCALE_F
-		var r_px: int = int(ceil((isl.radius * 1.35 + 42.0) * SCALE_F))
+		var r_px: int = int(ceil((isl.radius * 1.35 + 140.0) * SCALE_F))
 		for py in range(maxi(0, int(floor(ic.y)) - r_px), mini(MAP_H - 1, int(ceil(ic.y)) + r_px) + 1):
 			for px in range(maxi(0, int(floor(ic.x)) - r_px), mini(MAP_W - 1, int(ceil(ic.x)) + r_px) + 1):
 				var d: float = Contracts.get_water_depth((Vector2(float(px) + 0.5, float(py) + 0.5) - MAP_CENTER) / SCALE_F, world_seed)
-				if d <= -0.55: img.set_pixel(px, py, Color(0.20, 0.40, 0.24, 1.0))
-				elif d <= -0.18: img.set_pixel(px, py, Color(0.24, 0.52, 0.26, 1.0))
-				elif d <= 0.0: img.set_pixel(px, py, Color(0.84, 0.72, 0.46, 1.0))
-				elif d <= 0.22: img.set_pixel(px, py, Color(0.11, 0.34, 0.44, 0.96))
+				if d <= -0.55:
+					img.set_pixel(px, py, Color(0.20, 0.40, 0.24, 1.0))
+				elif d <= -0.18:
+					img.set_pixel(px, py, Color(0.24, 0.52, 0.26, 1.0))
+				elif d <= 0.0:
+					img.set_pixel(px, py, Color(0.84, 0.72, 0.46, 1.0))
+				elif d <= 0.22:
+					img.set_pixel(px, py, Color(0.11, 0.34, 0.44, 0.96))
 
+	# Distinct Safe Harbor anchor/diamond marker ONLY on the 3 safe harbors
+	var harbor_emerald := Color(0.26, 0.90, 0.56, 1.0)
 	for isl_var in islands:
 		var isl: Contracts.IslandData = isl_var
-		if isl == null:
+		if isl == null or not isl.has_harbor:
 			continue
 		var hp: Vector2 = (MAP_CENTER + isl.harbor_pos * SCALE_F).round()
-		for sy in range(1, 6):
-			for sx in range(1, 6):
-				if absi(sx - 3) + absi(sy - 3) <= 2:
-					var dx: int = int(hp.x) - 3 + sx
-					var dy: int = int(hp.y) - 3 + sy
-					if dx >= 0 and dx < MAP_W and dy >= 0 and dy < MAP_H:
-						img.set_pixel(dx, dy, UIThemeHelper.COL_GOLD if (absi(sx - 3) + absi(sy - 3) <= 1) else UIThemeHelper.COL_OUTLINE)
+		for dy_off in range(-3, 4):
+			for dx_off in range(-3, 4):
+				var manhattan: int = absi(dx_off) + absi(dy_off)
+				if manhattan > 3:
+					continue
+				var dx: int = int(hp.x) + dx_off
+				var dy: int = int(hp.y) + dy_off
+				if dx < 0 or dx >= MAP_W or dy < 0 or dy >= MAP_H:
+					continue
+				if manhattan <= 1:
+					img.set_pixel(dx, dy, UIThemeHelper.COL_GOLD)
+				elif manhattan == 2:
+					img.set_pixel(dx, dy, harbor_emerald)
+				else:
+					img.set_pixel(dx, dy, UIThemeHelper.COL_OUTLINE)
 
 	_baked_map_tex = ImageTexture.create_from_image(img)
 	queue_redraw()
@@ -107,15 +132,21 @@ func _ensure_icons() -> void:
 
 func _build_legend_labels() -> void:
 	var lx: float = MAP_RECT.position.x
-	var ly1: float = MAP_RECT.end.y + 10.0
-	var ly2: float = ly1 + 24.0
+	var ly1: float = MAP_RECT.end.y + 7.0
+	var ly2: float = ly1 + 20.0
 	for entry in [
-		[Vector2(lx + 12.0, ly1), "Du"], [Vector2(lx + 58.0, ly1), "Hafen"], [Vector2(lx + 130.0, ly1), "Pirat"],
-		[Vector2(lx + 12.0, ly2), "Handel"], [Vector2(lx + 88.0, ly2), "Fort"], [Vector2(lx + 144.0, ly2), "Ziel"]
+		[Vector2(lx + 12.0, ly1), "Du"], [Vector2(lx + 72.0, ly1), "Hafen"], [Vector2(lx + 158.0, ly1), "Pirat"],
+		[Vector2(lx + 12.0, ly2), "Handel"], [Vector2(lx + 84.0, ly2), "Fort"], [Vector2(lx + 158.0, ly2), "Ziel"]
 	]:
 		var lbl: Label = UIThemeHelper.make_label(entry[1], 14, UIThemeHelper.COL_IVORY)
 		lbl.position = (entry[0] as Vector2).round()
 		add_child(lbl)
+
+	var hint := UIThemeHelper.make_label("[M / Klick] Seekarte", 14, UIThemeHelper.COL_GOLD)
+	hint.position = Vector2(lx, ly2 + 19.0).round()
+	hint.size = Vector2(MAP_RECT.size.x, 20.0)
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	add_child(hint)
 
 
 func _draw() -> void:
@@ -133,11 +164,15 @@ func _draw() -> void:
 	draw_rect(MAP_RECT, UIThemeHelper.COL_BRASS_DIM, false, 1.5)
 
 	var lx: float = MAP_RECT.position.x
-	var ly1: float = MAP_RECT.end.y + 14.0
-	var ly2: float = ly1 + 24.0
+	var ly1: float = MAP_RECT.end.y + 11.0
+	var ly2: float = ly1 + 20.0
 	for entry in [
-		[Vector2(lx, ly1), Color.WHITE], [Vector2(lx + 46.0, ly1), UIThemeHelper.COL_GOLD], [Vector2(lx + 118.0, ly1), Color(0.94, 0.28, 0.26)],
-		[Vector2(lx, ly2), Color(0.38, 0.76, 0.98)], [Vector2(lx + 76.0, ly2), Color(0.98, 0.54, 0.20)], [Vector2(lx + 132.0, ly2), UIThemeHelper.COL_TURQUOISE]
+		[Vector2(lx, ly1), Color.WHITE],
+		[Vector2(lx + 60.0, ly1), Color(0.26, 0.90, 0.56)],
+		[Vector2(lx + 146.0, ly1), Color(0.94, 0.28, 0.26)],
+		[Vector2(lx, ly2), Color(0.38, 0.76, 0.98)],
+		[Vector2(lx + 72.0, ly2), Color(0.98, 0.54, 0.20)],
+		[Vector2(lx + 146.0, ly2), UIThemeHelper.COL_TURQUOISE]
 	]:
 		var r := Rect2(entry[0] as Vector2, Vector2(8.0, 8.0))
 		draw_rect(r, entry[1] as Color, true)
@@ -180,14 +215,14 @@ func _draw_dynamic_ships(mc: Vector2) -> void:
 			continue
 		var fac: int = int(s.get("faction"))
 		var scol: Color = Color(0.94, 0.28, 0.26)
-		var dot_size: float = 6.0
+		var dot_size: float = 5.0
 		if fac == Contracts.ShipFaction.MERCHANT:
 			var is_galleon: bool = bool(s.get_meta("is_treasure_galleon", false))
 			scol = UIThemeHelper.COL_GOLD if is_galleon else Color(0.38, 0.76, 0.98)
-			dot_size = 8.0 if is_galleon else 6.0
+			dot_size = 7.0 if is_galleon else 5.0
 		elif fac == Contracts.ShipFaction.NAVY:
 			scol = Color(0.32, 0.56, 0.98)
-			dot_size = 7.0
+			dot_size = 6.0
 		elif fac == Contracts.ShipFaction.PLAYER:
 			scol = Color(0.45, 0.95, 0.48)
 		var half_d: float = floor(dot_size * 0.5)

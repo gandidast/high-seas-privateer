@@ -12,11 +12,13 @@ var lbl_hp: Label = null
 var lbl_hull_title: Label = null
 var lbl_port: Label = null
 var lbl_starboard: Label = null
+var lbl_bow: Label = null
 var lbl_weather: Label = null
 var lbl_wanted: Label = null
 var lbl_quest: Label = null
 var lbl_harbor: Label = null
 var lbl_toast: Label = null
+var lbl_death_banner: Label = null
 var lbl_controls: Label = null
 var lbl_controls_right: Label = null
 var lbl_wind_title: Label = null
@@ -38,6 +40,8 @@ var _last_wind_pct: int = -1
 var _last_quest_key: String = ""
 var _last_port_rdy: bool = false
 var _last_sb_rdy: bool = false
+var _last_bow_rdy: int = -1
+var _last_death_key: String = ""
 
 
 func build(parent: Control) -> void:
@@ -51,11 +55,16 @@ func build(parent: Control) -> void:
 	lbl_port.text = "[Q] Backbord"
 	lbl_starboard = _make(parent, Vector2(224.0, 116.0), 14, UIThemeHelper.COL_MUTED)
 	lbl_starboard.text = "[E] Steuerbord"
+	lbl_bow = _make(parent, Vector2(30.0, 160.0), 14, UIThemeHelper.COL_MUTED)
+	lbl_bow.text = "[Space] Bug-Geschütz"
+	lbl_bow.visible = false
 
 	lbl_weather = _make(parent, Vector2(450.0, 25.0), 16, UIThemeHelper.COL_TURQUOISE)
 	lbl_wanted = _make(parent, Vector2(700.0, 25.0), 16, UIThemeHelper.COL_MUTED, 240.0, HORIZONTAL_ALIGNMENT_RIGHT)
 	lbl_quest = _make(parent, Vector2(480.0, 79.0), 15, Color(0.98, 0.90, 0.58), 450.0)
 	lbl_quest.visible = false
+	lbl_death_banner = _make(parent, Vector2(330.0, 144.0), 18, Color(1.0, 0.88, 0.72), 620.0, HORIZONTAL_ALIGNMENT_CENTER)
+	lbl_death_banner.visible = false
 	lbl_harbor = _make(parent, Vector2(340.0, 558.0), 18, UIThemeHelper.COL_GOLD, 600.0, HORIZONTAL_ALIGNMENT_CENTER)
 	lbl_harbor.visible = false
 	lbl_toast = _make(parent, Vector2(330.0, 507.0), 16, UIThemeHelper.COL_IVORY, 620.0, HORIZONTAL_ALIGNMENT_CENTER)
@@ -63,8 +72,8 @@ func build(parent: Control) -> void:
 
 	lbl_controls = _make(parent, Vector2(18.0, 686.0), 14, UIThemeHelper.COL_MUTED)
 	lbl_controls.text = "A/D Ruder • W/S Segel • Q/E Schuss"
-	lbl_controls_right = _make(parent, Vector2(900.0, 686.0), 14, UIThemeHelper.COL_MUTED, 362.0, HORIZONTAL_ALIGNMENT_RIGHT)
-	lbl_controls_right.text = "Tab Schiffs-Grid • F Hafen"
+	lbl_controls_right = _make(parent, Vector2(802.0, 686.0), 14, UIThemeHelper.COL_MUTED, 460.0, HORIZONTAL_ALIGNMENT_RIGHT)
+	lbl_controls_right.text = "Tab Grid • F Hafen • M Seekarte • Space Bug"
 
 	lbl_wind_title = _make(parent, Vector2.ZERO, 14, UIThemeHelper.COL_TURQUOISE)
 	lbl_wind_title.text = "WIND"
@@ -97,6 +106,10 @@ func sync_layout(vp_size: Vector2, top_bar: Rect2, cc: Vector2, compass_radius: 
 	lbl_quest.position = Vector2(top_bar.position.x + 52.0, 79.0).round()
 	lbl_quest.size = Vector2(maxf(120.0, top_bar.size.x - 66.0), 24.0)
 
+	var death_w: float = minf(620.0, vp_size.x - 40.0)
+	lbl_death_banner.position = Vector2(round(vp_size.x * 0.5 - death_w * 0.5), 144.0).round()
+	lbl_death_banner.size = Vector2(death_w, 30.0)
+
 	var harbor_w: float = minf(600.0, vp_size.x - 40.0)
 	lbl_harbor.position = Vector2(round(vp_size.x * 0.5 - harbor_w * 0.5), vp_size.y - 162.0).round()
 	lbl_harbor.size = Vector2(harbor_w, 30.0)
@@ -106,7 +119,8 @@ func sync_layout(vp_size: Vector2, top_bar: Rect2, cc: Vector2, compass_radius: 
 	lbl_toast.size = Vector2(toast_w, 28.0)
 
 	lbl_controls.position = Vector2(18.0, vp_size.y - 34.0).round()
-	lbl_controls_right.position = Vector2(vp_size.x - 380.0, vp_size.y - 34.0).round()
+	lbl_controls_right.position = Vector2(vp_size.x - 478.0, vp_size.y - 34.0).round()
+	lbl_controls_right.size = Vector2(460.0, 26.0)
 
 	var wing_pos := Vector2(cc.x - 196.0, cc.y - 34.0)
 	lbl_wind_title.position = (wing_pos + Vector2(14.0, 8.0)).round()
@@ -129,7 +143,11 @@ func update(
 	active_quests: Array,
 	quest_target_pos: Vector2,
 	current_harbor_idx: int,
-	current_harbor_name: String
+	current_harbor_name: String,
+	bow_ready: float = -1.0,
+	death_active: bool = false,
+	death_gold: int = 20,
+	death_seconds: float = 0.0
 ) -> String:
 	var class_title: String = "Schaluppe"
 	if player_ship != null:
@@ -143,7 +161,8 @@ func update(
 
 		var tier_val: Variant = player_ship.get("hull_tier")
 		var tier: int = int(tier_val) if tier_val != null else 0
-		class_title = "Brigg" if tier == Contracts.ShipClass.BRIGANTINE else ("Fregatte" if tier == Contracts.ShipClass.FRIGATE else "Schaluppe")
+		var spec: Dictionary = Contracts.get_ship_class_spec(tier)
+		class_title = str(spec.get("name", "Schaluppe"))
 		if lbl_class.text != class_title:
 			lbl_class.text = class_title
 
@@ -166,6 +185,17 @@ func update(
 	if sb_rdy != _last_sb_rdy:
 		_last_sb_rdy = sb_rdy
 		lbl_starboard.add_theme_color_override("font_color", Color(0.98, 0.68, 0.56) if sb_rdy else UIThemeHelper.COL_MUTED)
+
+	var bow_state: int = -1 if bow_ready < 0.0 else (2 if bow_ready >= 0.99 else 1)
+	if bow_state != _last_bow_rdy:
+		_last_bow_rdy = bow_state
+		lbl_bow.visible = bow_state >= 0
+		if bow_state == 2:
+			lbl_bow.text = "[Space] Bug-Geschütz (Bereit)"
+			lbl_bow.add_theme_color_override("font_color", UIThemeHelper.COL_GOLD)
+		elif bow_state == 1:
+			lbl_bow.text = "[Space] Bug-Geschütz (Lädt...)"
+			lbl_bow.add_theme_color_override("font_color", UIThemeHelper.COL_MUTED)
 
 	var w_pct: int = int(round(clampf(wind_strength, 0.0, 1.0) * 100.0))
 	if w_pct != _last_wind_pct:
@@ -208,10 +238,21 @@ func update(
 		lbl_quest.visible = false
 		_last_quest_key = ""
 
+	if death_active:
+		var sec_disp: int = maxi(0, int(ceil(death_seconds)))
+		var d_key := "SCHIFF VERSENKT! (-%d Gold) • Rückkehr zum Hafen in %ds" % [death_gold, sec_disp]
+		lbl_death_banner.visible = true
+		if _last_death_key != d_key:
+			_last_death_key = d_key
+			lbl_death_banner.text = d_key
+	else:
+		lbl_death_banner.visible = false
+		_last_death_key = ""
+
 	if current_harbor_idx != _last_harbor:
 		_last_harbor = current_harbor_idx
 		lbl_harbor.visible = current_harbor_idx >= 0
 		if lbl_harbor.visible:
-			lbl_harbor.text = "[F / Space] Hafen von %s betreten" % current_harbor_name
+			lbl_harbor.text = "[F] Hafen von %s betreten" % current_harbor_name
 
 	return class_title
