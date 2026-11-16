@@ -7,6 +7,11 @@ extends Node2D
 const SHADER_PATH := "res://visual/ocean_shader.gdshader"
 const OUTLINE_COLOR := Color(0.094, 0.078, 0.145, 1.0) # #181425 crisp dark outline
 const MIN_QUAD_SIZE := Vector2(768.0, 448.0)
+const DEPTH_MAP_RES: int = 1024
+const DEPTH_MAP_HALF_EXTENT: float = Contracts.WORLD_HALF_EXTENT
+const SHADOW_COLOR := Color(0.06, 0.05, 0.09, 0.28)
+
+static var _depth_tex_cache: Dictionary = {} # world_seed -> ImageTexture
 
 var _world_seed: int = Contracts.DEFAULT_WORLD_SEED
 var _camera_center: Vector2 = Vector2.ZERO
@@ -27,7 +32,20 @@ var _shader_mat: ShaderMaterial
 var _harbor_root: Node2D
 var _pier_texture: ImageTexture
 var _harbor_buoy_markers: Array[Dictionary] = []
+var _harbor_props: Array[Dictionary] = [] # { "node": Node2D, "pos": Vector2, "margin": float }
 var _forts: Dictionary = {} # fort_id -> { "pos": Vector2, "island_index": int, "hp": float, "max_hp": float, "hit_flash": float }
+
+# Cached last-uploaded shader uniforms to avoid redundant GPU uploads
+var _last_shader_seed: int = -999999999
+var _last_shader_cam: Vector2 = Vector2(INF, INF)
+var _last_shader_vp: Vector2 = Vector2(-1.0, -1.0)
+var _last_shader_wind_dir: Vector2 = Vector2(INF, INF)
+var _last_shader_wind_str: float = -1.0
+var _last_shader_weather: int = -1
+var _last_shader_weather_int: float = -1.0
+var _last_shader_lightning_amt: float = -1.0
+var _last_shader_lightning_pos: Vector2 = Vector2(INF, INF)
+var _had_visible_drawables: bool = false
 
 
 func _ready() -> void:
@@ -42,8 +60,6 @@ func _ensure_nodes() -> void:
 	if _ocean_sprite != null:
 		return
 
-	# 2x2 white texture + centered = false guarantees zero (-0.5, -0.5) snapping offset
-	# so the ocean quad covers all 4 screen quadrants reliably.
 	var img := Image.create(2, 2, false, Image.FORMAT_RGBA8)
 	img.fill(Color.WHITE)
 	var white_tex := ImageTexture.create_from_image(img)
@@ -98,12 +114,14 @@ func setup(world_seed: int = Contracts.DEFAULT_WORLD_SEED) -> void:
 	_apply_world_uniforms()
 	_rebuild_harbor_props()
 	_sync_quad_transform()
+	_update_prop_culling()
 
 
 func set_camera_center(world_pos: Vector2) -> void:
 	_ensure_nodes()
 	_camera_center = world_pos
 	_sync_quad_transform()
+	_update_prop_culling()
 
 
 func set_wind(direction: Vector2, strength: float) -> void:
@@ -112,17 +130,18 @@ func set_wind(direction: Vector2, strength: float) -> void:
 		_wind_dir = direction.normalized()
 	_wind_strength = maxf(0.0, strength)
 	if _shader_mat != null:
-		_shader_mat.set_shader_parameter("wind_dir", _wind_dir)
-		_shader_mat.set_shader_parameter("wind_strength", _wind_strength)
+		if not _wind_dir.is_equal_approx(_last_shader_wind_dir):
+			_last_shader_wind_dir = _wind_dir
+			_shader_mat.set_shader_parameter("wind_dir", _wind_dir)
+		if not is_equal_approx(_wind_strength, _last_shader_wind_str):
+			_last_shader_wind_str = _wind_strength
+			_shader_mat.set_shader_parameter("wind_strength", _wind_strength)
 
 
 func set_weather(weather_state: int, intensity: float = 1.0) -> void:
 	_ensure_nodes()
 	_weather_state = clampi(weather_state, Contracts.WeatherState.CLEAR, Contracts.WeatherState.STORM)
-	if _weather_state == Contracts.WeatherState.CLEAR:
-		_target_weather_intensity = 0.0
-	else:
-		_target_weather_intensity = clampf(intensity, 0.0, 1.0)
+	_target_weather_intensity = 0.0 if _weather_state == Contracts.WeatherState.CLEAR else clampf(intensity, 0.0, 1.0)
 	_weather_intensity = _target_weather_intensity
 	_apply_weather_uniforms()
 
@@ -161,38 +180,65 @@ func _process(delta: float) -> void:
 			_camera_center = cam.get_screen_center_position()
 			zoom_safe = Vector2(maxf(0.25, cam.zoom.x), maxf(0.25, cam.zoom.y))
 		var world_view := vp_size / zoom_safe + Vector2(128.0, 128.0)
-		# Round up to even integers and never shrink below MIN_QUAD_SIZE (768x448)
 		var even_w: float = maxf(MIN_QUAD_SIZE.x, ceil(world_view.x * 0.5) * 2.0)
 		var even_h: float = maxf(MIN_QUAD_SIZE.y, ceil(world_view.y * 0.5) * 2.0)
 		_quad_world_size = Vector2(even_w, even_h)
 
 	_sync_quad_transform()
 	_apply_weather_uniforms()
-	queue_redraw()
+	var has_visible: bool = _update_prop_culling()
+	if has_visible or _had_visible_drawables:
+		_had_visible_drawables = has_visible
+		queue_redraw()
+
+
+func _get_cull_rect() -> Rect2:
+	return Rect2(_camera_center - _quad_world_size * 0.5, _quad_world_size)
+
+
+func _update_prop_culling() -> bool:
+	var cam_rect: Rect2 = _get_cull_rect()
+	for prop in _harbor_props:
+		var node := prop["node"] as Node2D
+		if is_instance_valid(node):
+			var margin: float = float(prop["margin"])
+			node.visible = cam_rect.grow(margin).has_point(prop["pos"] as Vector2)
+
+	for marker in _harbor_buoy_markers:
+		if cam_rect.grow(float(marker["radius"]) + 16.0).has_point(marker["pos"] as Vector2):
+			return true
+	for fid in _forts.keys():
+		if cam_rect.grow(36.0).has_point(_forts[fid]["pos"] as Vector2):
+			return true
+	return false
 
 
 func _draw() -> void:
-	# 1. Subtle dotted pixel-art harbor zone rings & buoy glints on the water
+	var cam_rect: Rect2 = _get_cull_rect()
+
+	# 1. Subtle dotted pixel-art harbor zone rings & buoy glints on the water (culled)
 	for marker in _harbor_buoy_markers:
 		var center: Vector2 = marker["pos"]
 		var radius: float = float(marker["radius"])
+		if not cam_rect.grow(radius + 16.0).has_point(center):
+			continue
 		var segments: int = 24
 		var pulse: float = 0.55 + 0.25 * sin(_time_accum * 2.4 + float(marker["index"]))
 		var ring_col := Color(0.957, 0.855, 0.451, 0.36 * pulse)
-		for i in range(segments):
-			if i % 2 != 0:
-				continue
-			var a0: float = (float(i) / float(segments)) * TAU + _time_accum * 0.08
-			var a1: float = (float(i) + 0.55) / float(segments) * TAU + _time_accum * 0.08
+		var base_rot: float = _time_accum * 0.08
+		for i in range(0, segments, 2):
+			var a0: float = (float(i) / float(segments)) * TAU + base_rot
+			var a1: float = (float(i) + 0.55) / float(segments) * TAU + base_rot
 			var p0: Vector2 = center + Vector2(cos(a0), sin(a0)) * radius
 			var p1: Vector2 = center + Vector2(cos(a1), sin(a1)) * radius
 			draw_line(p0.round(), p1.round(), ring_col, 1.0, false)
 
-	# 2. Subtle pixel ground shadow under forts (48x48 pixel-art bastion rendered by FxManager)
+	# 2. Subtle pixel ground shadow under forts (culled)
+	var shadow_rect: Rect2 = cam_rect.grow(36.0)
 	for fid in _forts.keys():
-		var fort: Dictionary = _forts[fid]
-		var fpos: Vector2 = (fort["pos"] as Vector2).round()
-		draw_circle(fpos + Vector2(1, 2), 20.0, Color(0.06, 0.05, 0.09, 0.28))
+		var fpos: Vector2 = (_forts[fid]["pos"] as Vector2).round()
+		if shadow_rect.has_point(fpos):
+			draw_circle(fpos + Vector2(1, 2), 20.0, SHADOW_COLOR)
 
 
 func _sync_quad_transform() -> void:
@@ -202,29 +248,113 @@ func _sync_quad_transform() -> void:
 	var half_size: Vector2 = (_quad_world_size * 0.5).round()
 	_ocean_sprite.position = snapped_center - half_size
 	_ocean_sprite.scale = _quad_world_size * 0.5
-	_shader_mat.set_shader_parameter("camera_world_pos", snapped_center)
-	_shader_mat.set_shader_parameter("viewport_size", _quad_world_size)
+
+	if snapped_center != _last_shader_cam:
+		_last_shader_cam = snapped_center
+		_shader_mat.set_shader_parameter("camera_world_pos", snapped_center)
+	if _quad_world_size != _last_shader_vp:
+		_last_shader_vp = _quad_world_size
+		_shader_mat.set_shader_parameter("viewport_size", _quad_world_size)
 
 
 func _apply_world_uniforms() -> void:
 	if _shader_mat == null:
 		return
-	var specs: PackedVector4Array = Contracts.get_shader_island_centers(_world_seed)
-	var angles: PackedFloat32Array = Contracts.get_shader_harbor_angles(_world_seed)
-	_shader_mat.set_shader_parameter("world_seed", _world_seed)
-	_shader_mat.set_shader_parameter("island_specs", specs)
-	_shader_mat.set_shader_parameter("harbor_angles", angles)
-	_shader_mat.set_shader_parameter("wind_dir", _wind_dir)
-	_shader_mat.set_shader_parameter("wind_strength", _wind_strength)
+	if _world_seed != _last_shader_seed:
+		_last_shader_seed = _world_seed
+		var depth_tex: ImageTexture = _get_or_bake_depth_texture(_world_seed)
+		_shader_mat.set_shader_parameter("world_seed", _world_seed)
+		_shader_mat.set_shader_parameter("world_depth_tex", depth_tex)
+		_shader_mat.set_shader_parameter("world_half_extent", DEPTH_MAP_HALF_EXTENT)
+		_shader_mat.set_shader_parameter("has_baked_depth", true)
+	if not _wind_dir.is_equal_approx(_last_shader_wind_dir):
+		_last_shader_wind_dir = _wind_dir
+		_shader_mat.set_shader_parameter("wind_dir", _wind_dir)
+	if not is_equal_approx(_wind_strength, _last_shader_wind_str):
+		_last_shader_wind_str = _wind_strength
+		_shader_mat.set_shader_parameter("wind_strength", _wind_strength)
 
 
 func _apply_weather_uniforms() -> void:
 	if _shader_mat == null:
 		return
-	_shader_mat.set_shader_parameter("weather_state", _weather_state)
-	_shader_mat.set_shader_parameter("weather_intensity", _weather_intensity)
-	_shader_mat.set_shader_parameter("lightning_amount", _lightning_amount)
-	_shader_mat.set_shader_parameter("lightning_world_pos", _lightning_world_pos)
+	if _weather_state != _last_shader_weather:
+		_last_shader_weather = _weather_state
+		_shader_mat.set_shader_parameter("weather_state", _weather_state)
+	if not is_equal_approx(_weather_intensity, _last_shader_weather_int):
+		_last_shader_weather_int = _weather_intensity
+		_shader_mat.set_shader_parameter("weather_intensity", _weather_intensity)
+	if not is_equal_approx(_lightning_amount, _last_shader_lightning_amt):
+		_last_shader_lightning_amt = _lightning_amount
+		_shader_mat.set_shader_parameter("lightning_amount", _lightning_amount)
+	if not _lightning_world_pos.is_equal_approx(_last_shader_lightning_pos):
+		_last_shader_lightning_pos = _lightning_world_pos
+		_shader_mat.set_shader_parameter("lightning_world_pos", _lightning_world_pos)
+
+
+static func _get_or_bake_depth_texture(world_seed: int) -> ImageTexture:
+	if _depth_tex_cache.has(world_seed):
+		return _depth_tex_cache[world_seed]
+
+	var res: int = DEPTH_MAP_RES
+	var half_ext: float = DEPTH_MAP_HALF_EXTENT
+	var full_span: float = half_ext * 2.0
+	var world_step: float = full_span / float(res)
+	var transition_band: float = 140.0
+
+	# Fill base image with deep-water sentinel (sd = 1.0 -> R = 255, G = 255, B = 0, A = 255)
+	var base_img := Image.create(res, res, false, Image.FORMAT_RGBA8)
+	base_img.fill(Color(1.0, 1.0, 0.0, 1.0))
+	var data: PackedByteArray = base_img.get_data()
+
+	for idx in range(Contracts.ISLAND_COUNT):
+		var center: Vector2 = Contracts.get_island_center(idx, world_seed)
+		var base_r: float = Contracts.get_island_radius(idx, world_seed)
+		var phase: float = Contracts.get_island_phase(idx, world_seed)
+		var harbor_angle: float = Contracts.get_island_harbor_angle(idx, world_seed)
+		var max_r: float = base_r * 1.35 + transition_band * 1.5
+		var max_r_sq: float = max_r * max_r
+
+		var px_min: int = clampi(int(floor((center.x - max_r + half_ext) / world_step)), 0, res - 1)
+		var px_max: int = clampi(int(ceil((center.x + max_r + half_ext) / world_step)), 0, res - 1)
+		var py_min: int = clampi(int(floor((center.y - max_r + half_ext) / world_step)), 0, res - 1)
+		var py_max: int = clampi(int(ceil((center.y + max_r + half_ext) / world_step)), 0, res - 1)
+
+		for py in range(py_min, py_max + 1):
+			var wy: float = ((float(py) + 0.5) / float(res) - 0.5) * full_span
+			var dy: float = wy - center.y
+			var dy_sq: float = dy * dy
+			var row_off: int = py * res * 4
+			for px in range(px_min, px_max + 1):
+				var wx: float = ((float(px) + 0.5) / float(res) - 0.5) * full_span
+				var dx: float = wx - center.x
+				var dist_sq: float = dx * dx + dy_sq
+				if dist_sq > max_r_sq:
+					continue
+				var dist: float = sqrt(dist_sq)
+				var theta: float = atan2(dy, dx) if dist > 0.0001 else 0.0
+				var wave: float = (
+					0.14 * sin(theta * 3.0 + phase)
+					+ 0.09 * cos(theta * 5.0 - phase * 1.3)
+					+ 0.05 * sin(theta * 7.0 + phase * 2.1)
+				)
+				var angle_diff: float = wrapf(theta - harbor_angle, -PI, PI)
+				var cove: float = exp(-(angle_diff * angle_diff) / 0.18)
+				var coast_r: float = base_r * (1.0 + wave - 0.28 * cove)
+				var sd: float = (dist - coast_r) / transition_band
+				if sd >= 1.0:
+					continue
+
+				var r_byte: int = clampi(int(round(clampf((sd + 1.0) * 0.5, 0.0, 1.0) * 255.0)), 0, 255)
+				var off: int = row_off + px * 4
+				if r_byte < data[off]:
+					data[off] = r_byte
+					data[off + 1] = clampi(int(round(clampf((sd + 0.24) / 0.48, 0.0, 1.0) * 255.0)), 0, 255)
+
+	var baked_img := Image.create_from_data(res, res, false, Image.FORMAT_RGBA8, data)
+	var tex := ImageTexture.create_from_image(baked_img)
+	_depth_tex_cache[world_seed] = tex
+	return tex
 
 
 func _rebuild_harbor_props() -> void:
@@ -233,32 +363,33 @@ func _rebuild_harbor_props() -> void:
 	for child in _harbor_root.get_children():
 		child.queue_free()
 	_harbor_buoy_markers.clear()
+	_harbor_props.clear()
 
 	for isl in _islands:
 		var coast_r: float = Contracts.get_island_coast_radius(isl.index, isl.harbor_angle, _world_seed)
 		var dir := Vector2(cos(isl.harbor_angle), sin(isl.harbor_angle))
 
-		# Wooden pixel pier anchored at shoreline extending into the harbor cove
+		var pier_pos: Vector2 = (isl.center + dir * (coast_r + 14.0)).round()
 		var pier_sprite := Sprite2D.new()
 		pier_sprite.name = "Pier_%d" % isl.index
 		pier_sprite.texture = _pier_texture
 		pier_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-		pier_sprite.position = (isl.center + dir * (coast_r + 14.0)).round()
+		pier_sprite.position = pier_pos
 		pier_sprite.rotation = isl.harbor_angle
 		_harbor_root.add_child(pier_sprite)
+		_harbor_props.append({ "node": pier_sprite, "pos": pier_pos, "margin": 48.0 })
 
-		# Harbor zone marker data for subtle water buoy ring
 		_harbor_buoy_markers.append({
 			"index": isl.index,
 			"pos": isl.harbor_pos,
 			"radius": isl.harbor_radius
 		})
 
-		# Crisp pixel-art island name banner near the harbor shore
 		var banner := _create_island_banner(isl.name)
-		var banner_anchor: Vector2 = isl.center + dir * (coast_r - 22.0) + Vector2(0.0, -26.0)
-		banner.position = banner_anchor.round()
+		var banner_anchor: Vector2 = (isl.center + dir * (coast_r - 22.0) + Vector2(0.0, -26.0)).round()
+		banner.position = banner_anchor
 		_harbor_root.add_child(banner)
+		_harbor_props.append({ "node": banner, "pos": banner_anchor, "margin": 96.0 })
 
 
 func _create_island_banner(island_name: String) -> Node2D:
@@ -269,8 +400,8 @@ func _create_island_banner(island_name: String) -> Node2D:
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.094, 0.075, 0.114, 0.94) # Noble dark mahogany/slate banner
-	style.border_color = Color(0.847, 0.663, 0.294, 1.0) # Warm brass trim (#d8a94b)
+	style.bg_color = Color(0.094, 0.075, 0.114, 0.94)
+	style.border_color = Color(0.847, 0.663, 0.294, 1.0)
 	style.set_border_width_all(1)
 	style.set_corner_radius_all(3)
 	style.shadow_color = Color(0.04, 0.03, 0.07, 0.55)
@@ -302,7 +433,6 @@ func _create_island_banner(island_name: String) -> Node2D:
 
 
 func _bake_pier_texture() -> ImageTexture:
-	# 44x18 horizontal pier facing +X (from shore at x=2 out to harbor at x=41)
 	var w: int = 44
 	var h: int = 18
 	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
@@ -316,7 +446,6 @@ func _bake_pier_texture() -> ImageTexture:
 	var brass := Color(0.957, 0.706, 0.106, 1.0)
 	var lantern := Color(1.0, 0.875, 0.451, 1.0)
 
-	# Main plank walkway
 	for x in range(3, 41):
 		var is_seam: bool = (x % 3 == 0)
 		for y in range(5, 13):
@@ -331,7 +460,6 @@ func _bake_pier_texture() -> ImageTexture:
 				c = wood_dark
 			img.set_pixel(x, y, c)
 
-	# T-head dock end at x=35..41
 	for x in range(35, 42):
 		for y in range(3, 15):
 			var c: Color = wood_mid if (x % 3 != 0) else wood_dark
@@ -341,9 +469,7 @@ func _bake_pier_texture() -> ImageTexture:
 				c = wood_dark
 			img.set_pixel(x, y, c)
 
-	# Support pilings + subtle water foam rings around outer pilings
-	var piling_xs: Array[int] = [8, 17, 26, 36, 40]
-	for px in piling_xs:
+	for px in [8, 17, 26, 36, 40]:
 		for py in [4, 13]:
 			img.set_pixel(px, py, wood_dark)
 			img.set_pixel(px + 1, py, wood_light)
@@ -352,13 +478,11 @@ func _bake_pier_texture() -> ImageTexture:
 				if fy >= 0 and fy < h:
 					img.set_pixel(px, fy, foam)
 
-	# Mooring bollards & harbor lantern at pier end
 	img.set_pixel(39, 4, brass)
 	img.set_pixel(39, 13, lantern)
 	img.set_pixel(38, 13, brass)
 	img.set_pixel(40, 13, lantern)
 
-	# 1px crisp dark outline around solid wood pixels
 	var copy := img.duplicate() as Image
 	for y in range(h):
 		for x in range(w):
@@ -369,8 +493,7 @@ func _bake_pier_texture() -> ImageTexture:
 				var nx: int = x + dir.x
 				var ny: int = y + dir.y
 				if nx >= 0 and nx < w and ny >= 0 and ny < h:
-					var np: Color = copy.get_pixel(nx, ny)
-					if np.a > 0.95:
+					if copy.get_pixel(nx, ny).a > 0.95:
 						has_solid = true
 						break
 			if has_solid:
@@ -408,19 +531,12 @@ func _on_fort_spawned(fort_id: int, world_pos: Vector2, island_index: int, max_h
 
 func _on_fort_damaged(fort_id: int, hp: float, max_hp: float, world_pos: Vector2) -> void:
 	if not _forts.has(fort_id):
-		_forts[fort_id] = {
-			"pos": world_pos,
-			"island_index": -1,
-			"hp": hp,
-			"max_hp": maxf(1.0, max_hp),
-			"hit_flash": 0.14
-		}
-	else:
-		var fort: Dictionary = _forts[fort_id]
-		fort["hp"] = hp
-		fort["max_hp"] = maxf(1.0, max_hp)
-		fort["pos"] = world_pos
-		fort["hit_flash"] = 0.14
+		_on_fort_spawned(fort_id, world_pos, -1, max_hp)
+	var fort: Dictionary = _forts[fort_id]
+	fort["hp"] = hp
+	fort["max_hp"] = maxf(1.0, max_hp)
+	fort["pos"] = world_pos
+	fort["hit_flash"] = 0.14
 
 
 func _on_fort_destroyed(fort_id: int, _world_pos: Vector2) -> void:

@@ -2,7 +2,7 @@ class_name LootSystem
 extends Node
 ## Manages floating loot crates from sunken ships, ghost-ship wrecks with rare
 ## gear, coastal fort loot, Kraken boss trophies, periodic open-sea flotsam,
-## and salvage quest targets. 100% headless-safe.
+## salvage quest targets, and incremental delta/revision sync. 100% headless-safe.
 
 const ITEM_DB_PATH: String = "res://sim/item_database.gd"
 const COLLECT_RADIUS: float = 32.0
@@ -23,6 +23,7 @@ const GHOST_WRECK_ITEMS: Array[String] = [
 var is_authoritative: bool = true
 var drops: Dictionary = {} # drop_id (int) -> Contracts.LootDropData
 var world_map_ref: Node = null
+var sync_revision: int = 1
 
 var _next_drop_id: int = 1
 var _flotsam_timer: float = 12.0
@@ -55,6 +56,8 @@ func _ready() -> void:
 
 
 func clear_all() -> void:
+	if not drops.is_empty():
+		sync_revision += 1
 	drops.clear()
 	_ship_meta.clear()
 	_next_drop_id = 1
@@ -64,6 +67,19 @@ func clear_all() -> void:
 func setup(p_world_map: Node, p_authoritative: bool = true) -> void:
 	world_map_ref = p_world_map
 	is_authoritative = p_authoritative
+
+
+func get_sync_revision() -> int:
+	return sync_revision
+
+
+func _register_new_drop(drop: Contracts.LootDropData) -> Contracts.LootDropData:
+	drops[drop.drop_id] = drop
+	sync_revision += 1
+	var bus := _bus()
+	if bus != null:
+		bus.loot_spawned.emit(drop)
+	return drop
 
 
 func spawn_initial_flotsam(p_world_map: Node, count: int = 10) -> void:
@@ -95,11 +111,7 @@ func spawn_ghost_wreck(world_pos: Vector2) -> Contracts.LootDropData:
 		if item != null:
 			drop.items.append(item)
 
-	drops[drop.drop_id] = drop
-	var bus := _bus()
-	if bus != null:
-		bus.loot_spawned.emit(drop)
-	return drop
+	return _register_new_drop(drop)
 
 
 func spawn_salvage_target(world_pos: Vector2, quest_id: String) -> Contracts.LootDropData:
@@ -119,11 +131,7 @@ func spawn_salvage_target(world_pos: Vector2, quest_id: String) -> Contracts.Loo
 	if extra != null:
 		drop.items.append(extra)
 
-	drops[drop.drop_id] = drop
-	var bus := _bus()
-	if bus != null:
-		bus.loot_spawned.emit(drop)
-	return drop
+	return _register_new_drop(drop)
 
 
 func spawn_loot_drop(
@@ -174,11 +182,7 @@ func spawn_ship_wreck_loot(world_pos: Vector2, faction: int, is_treasure_galleon
 		if item != null:
 			drop.items.append(item)
 
-	drops[drop.drop_id] = drop
-	var bus := _bus()
-	if bus != null:
-		bus.loot_spawned.emit(drop)
-	return drop
+	return _register_new_drop(drop)
 
 
 func spawn_fort_loot(world_pos: Vector2) -> Contracts.LootDropData:
@@ -198,11 +202,7 @@ func spawn_fort_loot(world_pos: Vector2) -> Contracts.LootDropData:
 	if gear != null:
 		drop.items.append(gear)
 
-	drops[drop.drop_id] = drop
-	var bus := _bus()
-	if bus != null:
-		bus.loot_spawned.emit(drop)
-	return drop
+	return _register_new_drop(drop)
 
 
 func spawn_kraken_loot(world_pos: Vector2) -> Contracts.LootDropData:
@@ -222,11 +222,7 @@ func spawn_kraken_loot(world_pos: Vector2) -> Contracts.LootDropData:
 	if rare_gear != null:
 		drop.items.append(rare_gear)
 
-	drops[drop.drop_id] = drop
-	var bus := _bus()
-	if bus != null:
-		bus.loot_spawned.emit(drop)
-	return drop
+	return _register_new_drop(drop)
 
 
 func step_loot(
@@ -285,6 +281,8 @@ func step_loot(
 			if bus != null:
 				bus.loot_collected.emit(did, collector_id, drop)
 
+	if not to_remove.is_empty() or not collected_ids.is_empty():
+		sync_revision += 1
 	for did in to_remove:
 		drops.erase(did)
 	for did in collected_ids:
@@ -326,28 +324,24 @@ func _on_ship_sunk(ship_id: int, world_pos: Vector2, faction: int, _killer_ship_
 	_ship_meta.erase(ship_id)
 	if faction == Contracts.ShipFaction.PLAYER:
 		return
-	var is_galleon: bool = bool(meta.get("is_treasure_galleon", false))
-	spawn_ship_wreck_loot(world_pos, faction, is_galleon)
+	spawn_ship_wreck_loot(world_pos, faction, bool(meta.get("is_treasure_galleon", false)))
 
 
 func _on_fort_destroyed(_fort_id: int, world_pos: Vector2) -> void:
-	if not is_authoritative:
-		return
-	spawn_fort_loot(world_pos)
+	if is_authoritative:
+		spawn_fort_loot(world_pos)
 
 
 func _on_sea_monster_defeated(_monster_id: int, world_pos: Vector2) -> void:
-	if not is_authoritative:
-		return
-	spawn_kraken_loot(world_pos)
+	if is_authoritative:
+		spawn_kraken_loot(world_pos)
 
 
 func _spawn_random_flotsam() -> void:
-	var pos: Vector2 = _pick_open_sea_position()
 	var drop := Contracts.LootDropData.new()
 	drop.drop_id = _next_drop_id
 	_next_drop_id += 1
-	drop.world_pos = pos
+	drop.world_pos = _pick_open_sea_position()
 	drop.gold = _rng.randi_range(15, 45)
 	drop.is_salvage_target = false
 	drop.lifetime = 240.0
@@ -358,23 +352,16 @@ func _spawn_random_flotsam() -> void:
 		if item != null:
 			drop.items.append(item)
 
-	drops[drop.drop_id] = drop
-	var bus := _bus()
-	if bus != null:
-		bus.loot_spawned.emit(drop)
+	_register_new_drop(drop)
 
 
 func _pick_open_sea_position() -> Vector2:
 	var extent: float = Contracts.WORLD_HALF_EXTENT * 0.72
 	for _attempt in range(24):
-		var candidate := Vector2(
-			_rng.randf_range(-extent, extent),
-			_rng.randf_range(-extent, extent)
-		)
+		var candidate := Vector2(_rng.randf_range(-extent, extent), _rng.randf_range(-extent, extent))
 		if candidate.length() < 120.0:
 			continue
-		var depth: float = _get_depth(candidate)
-		if depth >= 0.25:
+		if _get_depth(candidate) >= 0.25:
 			return candidate
 	return Vector2(_rng.randf_range(-240.0, 240.0), _rng.randf_range(-240.0, 240.0))
 
@@ -462,30 +449,48 @@ func to_sync_array() -> Array:
 	return out
 
 
+## Incremental diffing: allocates LootDropData only for genuinely new drops,
+## updates existing crates in-place without respawning, and removes gone drops.
 func apply_sync_array(raw_drops: Array) -> void:
 	var seen: Dictionary = {}
+	var bus := _bus()
+	var changed: bool = false
+
 	for raw in raw_drops:
 		if not (raw is Dictionary):
 			continue
-		var drop := Contracts.LootDropData.from_dict(raw)
-		seen[drop.drop_id] = true
-		if not drops.has(drop.drop_id):
-			drops[drop.drop_id] = drop
-			var bus := _bus()
-			if bus != null:
-				bus.loot_spawned.emit(drop)
+		var d: Dictionary = raw
+		var did: int = int(d.get("drop_id", 0))
+		if did <= 0:
+			continue
+		seen[did] = true
+
+		if drops.has(did):
+			var existing: Contracts.LootDropData = drops[did]
+			if existing != null:
+				var next_pos := Vector2(float(d.get("x", existing.world_pos.x)), float(d.get("y", existing.world_pos.y)))
+				if existing.world_pos.distance_squared_to(next_pos) > 0.01:
+					existing.world_pos = next_pos
+					changed = true
+				existing.lifetime = float(d.get("lifetime", existing.lifetime))
 		else:
-			var existing: Contracts.LootDropData = drops[drop.drop_id]
-			existing.world_pos = drop.world_pos
-			existing.lifetime = drop.lifetime
+			var new_drop := Contracts.LootDropData.from_dict(d)
+			drops[did] = new_drop
+			changed = true
+			if bus != null:
+				bus.loot_spawned.emit(new_drop)
 
 	var to_erase: Array[int] = []
 	for did_var in drops.keys():
 		if not seen.has(int(did_var)):
 			to_erase.append(int(did_var))
-	var bus2 := _bus()
+
 	for did in to_erase:
 		var old_drop: Contracts.LootDropData = drops[did]
 		drops.erase(did)
-		if bus2 != null:
-			bus2.loot_collected.emit(did, -1, old_drop)
+		changed = true
+		if bus != null:
+			bus.loot_collected.emit(did, -1, old_drop)
+
+	if changed:
+		sync_revision += 1

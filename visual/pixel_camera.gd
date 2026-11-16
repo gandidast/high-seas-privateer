@@ -10,6 +10,7 @@ extends Camera2D
 @export var max_shake_px: float = 9.0
 
 var _follow_target: Node2D = null
+var _target_has_smooth_pos: bool = false
 var _smooth_pos: Vector2 = Vector2.ZERO
 var _prev_target_pos: Vector2 = Vector2.ZERO
 var _has_prev_target_pos: bool = false
@@ -27,7 +28,7 @@ func _ready() -> void:
 
 func _get_target_world_pos() -> Vector2:
 	if is_instance_valid(_follow_target):
-		if _follow_target.has_method("get_smooth_world_pos"):
+		if _target_has_smooth_pos:
 			return _follow_target.call("get_smooth_world_pos")
 		return _follow_target.global_position
 	return Vector2.ZERO
@@ -35,6 +36,7 @@ func _get_target_world_pos() -> Vector2:
 
 func set_follow_target(target: Node2D) -> void:
 	_follow_target = target
+	_target_has_smooth_pos = is_instance_valid(_follow_target) and _follow_target.has_method("get_smooth_world_pos")
 	_has_prev_target_pos = false
 	if is_instance_valid(_follow_target):
 		_prev_target_pos = _get_target_world_pos()
@@ -52,6 +54,20 @@ func snap_to_pos(world_pos: Vector2) -> void:
 
 func add_trauma(amount: float) -> void:
 	_trauma = clampf(_trauma + maxf(0.0, amount), 0.0, 1.0)
+
+
+func get_view_world_rect(margin: float = 0.0) -> Rect2:
+	var vp := get_viewport()
+	var vp_size := Vector2(640.0, 360.0)
+	if vp != null:
+		vp_size = vp.get_visible_rect().size
+		if vp is SubViewport:
+			var sv := vp as SubViewport
+			if sv.size.x > 0 and sv.size.y > 0:
+				vp_size = Vector2(sv.size)
+	var zoom_safe := Vector2(maxf(0.25, zoom.x), maxf(0.25, zoom.y))
+	var world_size: Vector2 = vp_size / zoom_safe
+	return Rect2(get_screen_center_position() - world_size * 0.5, world_size).grow(margin)
 
 
 func get_world_mouse_pos() -> Vector2:
@@ -99,5 +115,5 @@ func _process(delta: float) -> void:
 			round(_rng.randf_range(-1.0, 1.0) * shake)
 		)
 		_trauma = maxf(0.0, _trauma - trauma_decay * delta)
-	else:
+	elif offset != Vector2.ZERO:
 		offset = Vector2.ZERO

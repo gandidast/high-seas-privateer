@@ -1,13 +1,14 @@
 shader_type canvas_item;
 
 // Pixel-Art Ocean, Island, Wind & Dynamic Weather Shader (GL Compatibility compatible)
-// Uses the exact deterministic trigonometry from Contracts.get_water_depth().
+// Samples a pre-baked deterministic SDF texture in O(1) per fragment.
 
 uniform int world_seed = 1337420;
 uniform vec2 camera_world_pos = vec2(0.0, 0.0);
 uniform vec2 viewport_size = vec2(768.0, 448.0);
-uniform vec4 island_specs[6];
-uniform float harbor_angles[6];
+uniform sampler2D world_depth_tex : filter_linear, repeat_disable;
+uniform float world_half_extent = 2400.0;
+uniform bool has_baked_depth = false;
 uniform vec2 wind_dir = vec2(1.0, 0.0);
 uniform float wind_strength = 1.0;
 
@@ -17,7 +18,6 @@ uniform float weather_intensity = 0.0;
 uniform float lightning_amount = 0.0;
 uniform vec2 lightning_world_pos = vec2(0.0, 0.0);
 
-const float PI_VAL = 3.14159265359;
 const float TAU_VAL = 6.28318530718;
 
 float hash21(vec2 p) {
@@ -37,51 +37,23 @@ float value_noise(vec2 p) {
 	return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
-float wrap_pi(float angle) {
-	return mod(angle + PI_VAL, TAU_VAL) - PI_VAL;
-}
-
-float get_island_coast_radius(int idx, float theta) {
-	vec4 spec = island_specs[idx];
-	float base_r = spec.z;
-	float phase = spec.w;
-	float harbor_angle = harbor_angles[idx];
-
-	float wave = (
-		0.14 * sin(theta * 3.0 + phase)
-		+ 0.09 * cos(theta * 5.0 - phase * 1.3)
-		+ 0.05 * sin(theta * 7.0 + phase * 2.1)
-	);
-
-	float angle_diff = wrap_pi(theta - harbor_angle);
-	float cove_factor = exp(-(angle_diff * angle_diff) / 0.18);
-	return base_r * (1.0 + wave - 0.28 * cove_factor);
-}
-
-// Evaluates raw signed distance (in normalized transition bands) and final depth
-vec2 eval_depth_pair(vec2 world_pos) {
-	float min_signed_depth = 1.0;
-	float transition_band = 140.0;
-
-	for (int i = 0; i < 6; i++) {
-		vec4 spec = island_specs[i];
-		vec2 center = spec.xy;
-		float base_r = spec.z;
-		if (base_r <= 0.0) {
-			continue;
-		}
-		vec2 rel = world_pos - center;
-		float dist = length(rel);
-		if (dist > base_r * 1.35 + transition_band * 1.5) {
-			continue;
-		}
-		float theta = (dist > 0.0001) ? atan(rel.y, rel.x) : 0.0;
-		float coast_r = get_island_coast_radius(i, theta);
-		float signed_dist = (dist - coast_r) / transition_band;
-		if (signed_dist < min_signed_depth) {
-			min_signed_depth = signed_dist;
-		}
+// O(1) lookup of baked island signed depth field (R: [-1, 1], G: high-res [-0.24, 0.24])
+float sample_signed_depth(vec2 world_pos) {
+	if (!has_baked_depth) {
+		return 1.0;
 	}
+	vec2 map_uv = world_pos / (world_half_extent * 2.0) + vec2(0.5);
+	vec4 baked = texture(world_depth_tex, map_uv);
+	float sd = baked.r * 2.0 - 1.0;
+	if (sd > -0.22 && sd < 0.22) {
+		sd = baked.g * 0.48 - 0.24;
+	}
+	return sd;
+}
+
+// Evaluates final depth + raw signed depth using O(1) SDF texture + sea wave
+vec2 eval_depth_pair(vec2 world_pos) {
+	float min_signed_depth = sample_signed_depth(world_pos);
 
 	int seed_mod = world_seed - (world_seed / 10000) * 10000;
 	float seed_f = float(seed_mod) * 0.0071;
@@ -126,11 +98,12 @@ float bayer4(vec2 p) {
 }
 
 // Procedural 2D pixel-art palm tree clusters inside lush island interior
-vec3 apply_palm_clusters(vec2 wp, float depth_val, vec3 base_col, vec2 wdir, float storm_mix) {
+vec3 apply_palm_clusters(vec2 wp, vec3 base_col, vec2 wdir, float storm_mix) {
 	float cell_size = 15.0;
 	vec2 cell = floor(wp / cell_size);
-
 	vec3 col = base_col;
+	float sway_speed = mix(2.2, 5.4, storm_mix);
+	float sway_amp = mix(0.75, 1.85, storm_mix);
 
 	for (int oy = -1; oy <= 1; oy++) {
 		for (int ox = -1; ox <= 1; ox++) {
@@ -144,22 +117,23 @@ vec3 apply_palm_clusters(vec2 wp, float depth_val, vec3 base_col, vec2 wdir, flo
 				floor(hash21(c + vec2(8.2, 2.7)) * 7.0) + 4.0
 			);
 			vec2 tree_world = c * cell_size + jitter;
-			float tree_depth = eval_depth_pair(tree_world).x;
+			vec2 rel = wp - tree_world;
+			if (abs(rel.x) > 8.0 || rel.y < -10.0 || rel.y > 7.5) {
+				continue;
+			}
+
+			float tree_depth = sample_signed_depth(tree_world);
 			if (tree_depth > -0.21 || tree_depth <= -0.52) {
 				continue;
 			}
 
-			vec2 rel = wp - tree_world;
-
 			// Ground shadow (+2, +3)
 			vec2 shadow_rel = rel - vec2(2.0, 3.0);
-			if (length(shadow_rel) <= 4.2) {
+			if (dot(shadow_rel, shadow_rel) <= 17.64) {
 				col = mix(col, vec3(0.094, 0.239, 0.165), 0.72);
 			}
 
 			// Wind sway (quantized to 1px)
-			float sway_speed = mix(2.2, 5.4, storm_mix);
-			float sway_amp = mix(0.75, 1.85, storm_mix);
 			float sway = round(sin(TIME * sway_speed + c.x * 1.7 + c.y * 2.3) * sway_amp);
 			vec2 canopy_center = vec2(sway * wdir.x, -3.0 + sway * wdir.y * 0.5);
 
@@ -222,10 +196,10 @@ void fragment() {
 		float d_d = depth;
 		float d_u = depth;
 		if (near_coast || near_veg || near_rock) {
-			d_r = eval_depth_pair(wp + vec2(1.0, 0.0)).x;
-			d_l = eval_depth_pair(wp - vec2(1.0, 0.0)).x;
-			d_d = eval_depth_pair(wp + vec2(0.0, 1.0)).x;
-			d_u = eval_depth_pair(wp - vec2(0.0, 1.0)).x;
+			d_r = sample_signed_depth(wp + vec2(1.0, 0.0));
+			d_l = sample_signed_depth(wp - vec2(1.0, 0.0));
+			d_d = sample_signed_depth(wp + vec2(0.0, 1.0));
+			d_u = sample_signed_depth(wp - vec2(0.0, 1.0));
 		}
 
 		// Warm sandy beach: -0.18 < depth <= 0.0
@@ -259,7 +233,7 @@ void fragment() {
 				col = vec3(0.149, 0.361, 0.259);
 			}
 
-			col = apply_palm_clusters(wp, depth, col, wdir, storm_mix);
+			col = apply_palm_clusters(wp, col, wdir, storm_mix);
 
 			if (d_r > -0.18 || d_l > -0.18 || d_d > -0.18 || d_u > -0.18) {
 				col = vec3(0.118, 0.227, 0.161);
