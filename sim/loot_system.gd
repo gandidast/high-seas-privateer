@@ -54,6 +54,8 @@ const TIER_45_GEAR: Array[String] = [
 	"storm_sails_2x2"
 ]
 
+signal loot_cleared
+
 var is_authoritative: bool = true
 var drops: Dictionary = {} # drop_id (int) -> Contracts.LootDropData
 var world_map_ref: Node = null
@@ -62,6 +64,7 @@ var sync_revision: int = 1
 var _next_drop_id: int = 1
 var _flotsam_timer: float = 12.0
 var _ship_meta: Dictionary = {} # ship_id (int) -> { "hull_tier": int, "is_treasure_galleon": bool, "is_bounty_boss": bool }
+var _recently_collected_ids: Dictionary = {} # drop_id (int) -> bool (guards against stale snapshots re-spawning collected drops)
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _item_db_script: Script = null
 
@@ -94,8 +97,10 @@ func clear_all() -> void:
 		sync_revision += 1
 	drops.clear()
 	_ship_meta.clear()
+	_recently_collected_ids.clear()
 	_next_drop_id = 1
 	_flotsam_timer = FLOTSAM_SPAWN_INTERVAL
+	loot_cleared.emit()
 
 
 func setup(p_world_map: Node, p_authoritative: bool = true) -> void:
@@ -341,8 +346,7 @@ func step_loot(
 			to_remove.append(did)
 			continue
 
-		var radius: float = INTERACT_COLLECT_RADIUS if interact_pressed else COLLECT_RADIUS
-		var radius_sq: float = radius * radius
+		var base_radius: float = INTERACT_COLLECT_RADIUS if interact_pressed else COLLECT_RADIUS
 		var collector_id: int = -1
 
 		for sid_var in ships.keys():
@@ -351,8 +355,11 @@ func step_loot(
 				continue
 			if int(ship.get("faction")) != Contracts.ShipFaction.PLAYER:
 				continue
+			var hull_r_var: Variant = ship.get("hull_radius")
+			var hull_r: float = float(hull_r_var) if hull_r_var != null else 14.0
+			var radius: float = maxf(base_radius, hull_r + (34.0 if interact_pressed else 22.0))
 			var spos: Vector2 = ship.get("world_pos")
-			if spos.distance_squared_to(drop.world_pos) <= radius_sq:
+			if spos.distance_squared_to(drop.world_pos) <= radius * radius:
 				collector_id = int(ship.get("ship_id"))
 				break
 
@@ -365,8 +372,11 @@ func step_loot(
 
 	if not to_remove.is_empty() or not collected_ids.is_empty():
 		sync_revision += 1
+	var remove_bus := _bus()
 	for did in to_remove:
 		drops.erase(did)
+		if remove_bus != null:
+			remove_bus.loot_collected.emit(did, -1, null)
 	for did in collected_ids:
 		drops.erase(did)
 
@@ -450,17 +460,46 @@ func _pick_open_sea_position() -> Vector2:
 		var candidate := Vector2(_rng.randf_range(-extent, extent), _rng.randf_range(-extent, extent))
 		if candidate.length() < 120.0:
 			continue
-		if _get_depth(candidate) >= 0.25:
+		if _is_navigable_drop_pos(candidate):
 			return candidate
-	return Vector2(_rng.randf_range(-240.0, 240.0), _rng.randf_range(-240.0, 240.0))
+	return _ensure_water_pos(Vector2(_rng.randf_range(-240.0, 240.0), _rng.randf_range(-240.0, 240.0)))
+
+
+func _is_navigable_drop_pos(pos: Vector2) -> bool:
+	var max_bound: float = Contracts.WORLD_HALF_EXTENT - 48.0
+	if absf(pos.x) > max_bound or absf(pos.y) > max_bound:
+		return false
+	if _get_depth(pos) < 0.24:
+		return false
+	if world_map_ref != null and world_map_ref.has_method("check_hull_collision"):
+		var col: Variant = world_map_ref.call("check_hull_collision", pos, 18.0)
+		if col is Dictionary and bool(col.get("collided", false)):
+			return false
+	return true
 
 
 func _ensure_water_pos(pos: Vector2) -> Vector2:
-	if _get_depth(pos) >= 0.20:
-		return pos
+	var max_bound: float = Contracts.WORLD_HALF_EXTENT - 48.0
+	var clamped := Vector2(clampf(pos.x, -max_bound, max_bound), clampf(pos.y, -max_bound, max_bound))
+	if _is_navigable_drop_pos(clamped):
+		return clamped
 	if world_map_ref != null and world_map_ref.has_method("find_open_water_near"):
-		return world_map_ref.call("find_open_water_near", pos, 0.22)
-	return pos + Contracts.get_coast_normal(pos) * 56.0
+		var near: Vector2 = world_map_ref.call("find_open_water_near", clamped, 0.26)
+		if _is_navigable_drop_pos(near):
+			return near
+	var seed_val: int = int(world_map_ref.get("world_seed")) if (world_map_ref != null and world_map_ref.get("world_seed") != null) else Contracts.DEFAULT_WORLD_SEED
+	var normal: Vector2 = Contracts.get_coast_normal(clamped, seed_val)
+	for step in range(1, 16):
+		var pushed := clamped + normal * (float(step) * 28.0)
+		if _is_navigable_drop_pos(pushed):
+			return pushed
+	for ring in range(1, 24):
+		var r: float = float(ring) * 28.0
+		for i in range(12):
+			var cand := clamped + Vector2.from_angle(float(i) * (TAU / 12.0)) * r
+			if _is_navigable_drop_pos(cand):
+				return cand
+	return Vector2.ZERO
 
 
 func _get_depth(pos: Vector2) -> float:
@@ -559,10 +598,20 @@ func to_sync_array() -> Array:
 	return out
 
 
+func mark_drop_collected_remote(drop_id: int) -> void:
+	if drop_id <= 0:
+		return
+	_recently_collected_ids[drop_id] = true
+	if drops.has(drop_id):
+		drops.erase(drop_id)
+		sync_revision += 1
+
+
 ## Incremental diffing: allocates LootDropData only for genuinely new drops,
 ## updates existing crates in-place without respawning, and removes gone drops.
 func apply_sync_array(raw_drops: Array) -> void:
 	var seen: Dictionary = {}
+	var raw_ids: Dictionary = {}
 	var bus := _bus()
 	var changed: bool = false
 
@@ -572,6 +621,9 @@ func apply_sync_array(raw_drops: Array) -> void:
 		var d: Dictionary = raw
 		var did: int = int(d.get("drop_id", 0))
 		if did <= 0:
+			continue
+		raw_ids[did] = true
+		if _recently_collected_ids.has(did):
 			continue
 		seen[did] = true
 
@@ -590,17 +642,20 @@ func apply_sync_array(raw_drops: Array) -> void:
 			if bus != null:
 				bus.loot_spawned.emit(new_drop)
 
+	for r_id_var in _recently_collected_ids.keys():
+		if not raw_ids.has(int(r_id_var)):
+			_recently_collected_ids.erase(int(r_id_var))
+
 	var to_erase: Array[int] = []
 	for did_var in drops.keys():
 		if not seen.has(int(did_var)):
 			to_erase.append(int(did_var))
 
 	for did in to_erase:
-		var old_drop: Contracts.LootDropData = drops[did]
 		drops.erase(did)
 		changed = true
 		if bus != null:
-			bus.loot_collected.emit(did, -1, old_drop)
+			bus.loot_collected.emit(did, -1, null)
 
 	if changed:
 		sync_revision += 1

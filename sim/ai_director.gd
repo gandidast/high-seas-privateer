@@ -13,8 +13,11 @@ const PIRATE_AGGRO_RANGE: float = 340.0
 const NAVY_AGGRO_RANGE: float = 640.0
 const BOSS_AGGRO_RANGE: float = 480.0
 const FLEE_HP_RATIO: float = 0.30
-const FLEE_DESPAWN_DIST: float = 950.0
-const FLEE_MAX_SEC: float = 18.0
+const FLEE_KEEPALIVE_DIST: float = 1800.0
+const FLEE_DESPAWN_DIST: float = 2200.0
+const FLEE_BOSS_GALLEON_KEEPALIVE_DIST: float = 2400.0
+const FLEE_HARD_DESPAWN_DIST: float = 2800.0
+const FLEE_MAX_SEC: float = 45.0
 const STUCK_DIST_THRESHOLD: float = 8.0
 const STUCK_RECOVER_SEC: float = 5.0
 const STUCK_DESPAWN_SEC: float = 12.0
@@ -269,7 +272,7 @@ func step_ai(delta: float, all_ships: Dictionary) -> void:
 
 		# Abandoned bounty bosses eventually clear out so late-game stays clean
 		if bool(brain.get("is_bounty_boss", false)):
-			if min_player_dist > 1400.0:
+			if under_fire <= 0.0 and min_player_dist > FLEE_BOSS_GALLEON_KEEPALIVE_DIST:
 				var ab_t: float = float(brain.get("abandoned_timer", 0.0)) + delta
 				brain["abandoned_timer"] = ab_t
 				if ab_t >= BOUNTY_ABANDONED_SEC:
@@ -282,7 +285,7 @@ func step_ai(delta: float, all_ships: Dictionary) -> void:
 		if int(ship.get("faction")) == Contracts.ShipFaction.NAVY and wanted_level == 0:
 			brain["target_id"] = -1
 			brain["state"] = Contracts.AIState.FLEE_TO_PORT
-			if under_fire <= 0.0 or min_player_dist > 600.0:
+			if under_fire <= 0.0 and min_player_dist > FLEE_KEEPALIVE_DIST:
 				var wd_t: float = float(brain.get("withdraw_timer", 0.0)) + delta
 				brain["withdraw_timer"] = wd_t
 				if wd_t >= NAVY_WITHDRAW_SEC or (min_player_dist > FLEE_DESPAWN_DIST and wd_t >= 2.5):
@@ -295,11 +298,19 @@ func step_ai(delta: float, all_ships: Dictionary) -> void:
 
 		_update_state_transitions(sid, ship, brain, all_ships)
 
-		# FLEE_TO_PORT open-sea retreat & despawn (prevents harbor pile-ups / unkillable ships)
+		var is_high_value: bool = bool(brain.get("is_treasure_galleon", false)) or bool(brain.get("is_bounty_boss", false))
+		var keepalive_dist: float = FLEE_BOSS_GALLEON_KEEPALIVE_DIST if is_high_value else FLEE_KEEPALIVE_DIST
+
+		# FLEE_TO_PORT open-sea retreat & despawn (never despawn mid-chase / under fire)
 		if int(brain.get("state", Contracts.AIState.PATROL)) == Contracts.AIState.FLEE_TO_PORT:
 			var flee_t: float = float(brain.get("flee_timer", 0.0)) + delta
 			brain["flee_timer"] = flee_t
-			if flee_t >= FLEE_MAX_SEC or min_player_dist > FLEE_DESPAWN_DIST:
+			var can_timeout_despawn: bool = (under_fire <= 0.0 and flee_t >= FLEE_MAX_SEC and min_player_dist > keepalive_dist)
+			var can_dist_despawn: bool = (
+				(under_fire <= 0.0 and min_player_dist > maxf(FLEE_DESPAWN_DIST, keepalive_dist))
+				or min_player_dist > FLEE_HARD_DESPAWN_DIST
+			)
+			if can_timeout_despawn or can_dist_despawn:
 				to_despawn.append(sid)
 				continue
 		else:
@@ -319,8 +330,18 @@ func step_ai(delta: float, all_ships: Dictionary) -> void:
 				var stuck_t: float = float(brain.get("stuck_timer", 0.0)) + delta
 				brain["stuck_timer"] = stuck_t
 				if stuck_t > STUCK_DESPAWN_SEC:
-					to_despawn.append(sid)
-					continue
+					var in_active_combat: bool = (
+						under_fire > 0.0
+						or int(brain.get("state", Contracts.AIState.PATROL)) == Contracts.AIState.ENGAGE_BROADSIDE
+						or min_player_dist <= keepalive_dist
+					)
+					if in_active_combat:
+						# Never despawn ships engaged/chased near a player; reset recovery cycle cleanly
+						brain["stuck_timer"] = 0.0
+						brain["last_check_pos"] = ship_pos
+					else:
+						to_despawn.append(sid)
+						continue
 
 		var steer: float = _execute_state(sid, ship, brain, all_ships, delta)
 		if float(brain.get("stuck_timer", 0.0)) >= STUCK_RECOVER_SEC:
@@ -845,9 +866,11 @@ func _despawn_ai_ship(sid: int) -> void:
 		bus.ship_despawned.emit(sid)
 
 
-func _on_ship_damaged(ship_id: int, _damage: float, _new_hp: float, _max_hp: float, _world_pos: Vector2) -> void:
+func _on_ship_damaged(ship_id: int, _damage: float, _new_hp: float, _max_hp: float, world_pos: Vector2) -> void:
 	if ai_brains.has(ship_id):
-		ai_brains[ship_id]["under_fire_timer"] = 8.0
+		ai_brains[ship_id]["under_fire_timer"] = 12.0
+		ai_brains[ship_id]["stuck_timer"] = 0.0
+		ai_brains[ship_id]["last_check_pos"] = world_pos
 
 
 func _on_ship_sunk(ship_id: int, _world_pos: Vector2, faction: int, killer_ship_id: int) -> void:

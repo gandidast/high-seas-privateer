@@ -46,6 +46,7 @@ var _bow_poly := PackedVector2Array()
 var _cam_rect: Rect2 = Rect2()
 var _has_cam_rect: bool = false
 var _had_visible_fx: bool = false
+var _loot_system_ref: LootSystem = null
 
 func _ready() -> void:
 	_rng.randomize()
@@ -53,13 +54,28 @@ func _ready() -> void:
 	_connect_signals()
 
 
-func clear_all() -> void:
+func bind_loot_system(p_loot_system: LootSystem) -> void:
+	if _loot_system_ref != null and is_instance_valid(_loot_system_ref):
+		if _loot_system_ref.loot_cleared.is_connected(clear_loot_crates):
+			_loot_system_ref.loot_cleared.disconnect(clear_loot_crates)
+	_loot_system_ref = p_loot_system
+	if _loot_system_ref != null and is_instance_valid(_loot_system_ref):
+		if not _loot_system_ref.loot_cleared.is_connected(clear_loot_crates):
+			_loot_system_ref.loot_cleared.connect(clear_loot_crates)
+
+
+func clear_loot_crates() -> void:
 	for entry_var in _loot_crates.values():
 		if entry_var is Dictionary:
 			var spr: Variant = entry_var.get("sprite", null)
 			if is_instance_valid(spr):
 				(spr as Node).queue_free()
 	_loot_crates.clear()
+	queue_redraw()
+
+
+func clear_fx() -> void:
+	clear_loot_crates()
 	_projectiles.clear()
 	_particles.clear()
 	_rings.clear()
@@ -67,17 +83,28 @@ func clear_all() -> void:
 	_burning_ships.clear()
 	_harpoon_tethers.clear()
 	_lightning_bolts.clear()
+	_hitstop_timer = 0.0
+	_had_visible_fx = false
 	_aim_cone_active = false
 	_bow_cone_active = false
 	_entities_renderer.forts.clear()
 	_entities_renderer.sea_monsters.clear()
 	queue_redraw()
 
+
+func clear_all() -> void:
+	clear_fx()
+
+
+func _on_world_initialized(_seed: int, _islands: Array) -> void:
+	clear_fx()
+
 func _connect_signals() -> void:
 	var bus: Contracts = Contracts.bus()
 	if bus == null:
 		return
 	for pair in [
+		[bus.world_initialized, _on_world_initialized],
 		[bus.broadside_fired, _on_broadside_fired], [bus.cannonball_spawned, _on_cannonball_spawned],
 		[bus.cannonball_impact, _on_cannonball_impact], [bus.ship_state_updated, _on_ship_state_updated],
 		[bus.ship_damaged, _on_ship_damaged], [bus.ship_sunk, _on_ship_sunk],
@@ -500,13 +527,16 @@ func _on_loot_spawned(loot_data: Contracts.LootDropData) -> void:
 	_loot_crates[loot_data.drop_id] = { "sprite": spr, "pos": loot_data.world_pos, "salvage": loot_data.is_salvage_target }
 
 func _on_loot_collected(drop_id: int, collector_ship_id: int, loot_data: Contracts.LootDropData) -> void:
+	var had_crate: bool = _loot_crates.has(drop_id)
 	var burst_pos: Vector2 = loot_data.world_pos if loot_data != null else Vector2.ZERO
-	if _loot_crates.has(drop_id):
+	if had_crate:
 		burst_pos = _loot_crates[drop_id]["pos"]
 		var spr: Sprite2D = _loot_crates[drop_id]["sprite"]
 		if is_instance_valid(spr):
 			spr.queue_free()
 		_loot_crates.erase(drop_id)
+	elif collector_ship_id < 0 and loot_data == null:
+		return
 	if _is_near_camera(burst_pos, 160.0):
 		if collector_ship_id < 0:
 			_emit_ring(burst_pos, 3.0, 14.0, 0.35, Color(0.75, 0.90, 0.96, 0.55))

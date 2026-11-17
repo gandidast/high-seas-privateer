@@ -397,6 +397,8 @@ func _init_simulation(p_seed: int, authoritative: bool) -> void:
 	loot_system.name = "LootSystem"
 	add_child(loot_system)
 	loot_system.setup(world_map, authoritative)
+	if fx_manager != null and fx_manager.has_method("bind_loot_system"):
+		fx_manager.call("bind_loot_system", loot_system)
 
 	ai_director = AIDirector.new()
 	ai_director.name = "AIDirector"
@@ -558,6 +560,26 @@ func _bind_save_dirty_signals() -> void:
 		if sid == player_ship_id:
 			_mark_save_dirty())
 	bus.quest_list_updated.connect(func(_qs: Array): _mark_save_dirty())
+	bus.loot_collected.connect(_on_local_loot_collected)
+
+
+func _on_local_loot_collected(_drop_id: int, collector_ship_id: int, loot_data: Contracts.LootDropData) -> void:
+	if is_headless_server or not game_started or loot_data == null:
+		return
+	if collector_ship_id != player_ship_id:
+		return
+	if harbor_ui == null and network_manager != null and network_manager.current_mode == NetworkManager.Mode.CLIENT and player_grid != null and not loot_data.items.is_empty():
+		for item_var in loot_data.items:
+			if not (item_var is Contracts.GridItemData):
+				continue
+			var item: Contracts.GridItemData = item_var
+			var placed: bool = false
+			if player_grid.has_method("auto_place_item"):
+				placed = bool(player_grid.call("auto_place_item", item))
+			if not placed and player_grid.has_method("add_to_stash"):
+				player_grid.call("add_to_stash", item)
+	if loot_data.gold <= 0 and not loot_data.items.is_empty() and _bus() != null:
+		_bus().notification_posted.emit("Beute geborgen: %d Item(s)" % loot_data.items.size(), "loot")
 
 
 func _mark_save_dirty() -> void:
@@ -855,8 +877,11 @@ func _clear_game_world() -> void:
 	_respawn_timer = -1.0
 	_server_respawn_timers.clear()
 	_client_sync.reset()
-	if fx_manager != null and fx_manager.has_method("clear_all"):
-		fx_manager.call("clear_all")
+	if fx_manager != null:
+		if fx_manager.has_method("clear_fx"):
+			fx_manager.call("clear_fx")
+		elif fx_manager.has_method("clear_all"):
+			fx_manager.call("clear_all")
 	for node in [ai_director, loot_system, combat_system, world_map, player_grid]:
 		if node != null:
 			if node.has_method("clear_all"):

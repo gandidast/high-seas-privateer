@@ -1043,31 +1043,46 @@ func rpc_client_player_death_penalty(ship_id: int, gold_lost: int, respawn_sec: 
 
 
 func _on_server_loot_collected(drop_id: int, collector_ship_id: int, loot_data: Contracts.LootDropData) -> void:
-	var gold: int = loot_data.gold if loot_data != null else 0
-	var serialized_items: Array = []
+	if current_mode != Mode.SERVER or multiplayer.get_peers().is_empty():
+		return
+	var full_dict: Dictionary = loot_data.to_dict() if loot_data != null else {}
+	var public_dict: Dictionary = {}
 	if loot_data != null:
-		for item_var in loot_data.items:
-			if item_var is Contracts.GridItemData:
-				serialized_items.append((item_var as Contracts.GridItemData).to_dict())
-			elif item_var is Dictionary:
-				serialized_items.append(item_var)
-	_relay_rpc("rpc_client_loot_collected", [drop_id, collector_ship_id, gold, serialized_items])
+		public_dict = {
+			"drop_id": drop_id,
+			"x": loot_data.world_pos.x,
+			"y": loot_data.world_pos.y
+		}
+	for peer_id in multiplayer.get_peers():
+		if peer_id == collector_ship_id:
+			rpc_id(peer_id, "rpc_client_loot_collected", drop_id, collector_ship_id, full_dict)
+		else:
+			rpc_id(peer_id, "rpc_client_loot_collected", drop_id, collector_ship_id, public_dict)
 
 
 @rpc("authority", "reliable")
-func rpc_client_loot_collected(drop_id: int, collector_ship_id: int, gold: int, serialized_items: Array = []) -> void:
-	if current_mode != Mode.CLIENT or _bus() == null:
+func rpc_client_loot_collected(drop_id: int, collector_ship_id: int, drop_dict: Dictionary = {}) -> void:
+	if current_mode != Mode.CLIENT:
+		return
+	if loot_system_ref != null:
+		loot_system_ref.mark_drop_collected_remote(drop_id)
+	var bus := _bus()
+	if bus == null:
 		return
 	if collector_ship_id == local_peer_id:
-		var dummy := Contracts.LootDropData.new()
-		dummy.drop_id = drop_id
-		dummy.gold = gold
-		for raw_item in serialized_items:
-			if raw_item is Dictionary:
-				dummy.items.append(Contracts.GridItemData.from_dict(raw_item))
-		_bus().loot_collected.emit(drop_id, collector_ship_id, dummy)
+		var drop: Contracts.LootDropData = Contracts.LootDropData.from_dict(drop_dict) if not drop_dict.is_empty() else Contracts.LootDropData.new()
+		drop.drop_id = drop_id
+		if drop_dict.is_empty():
+			drop.gold = 0
+		bus.loot_collected.emit(drop_id, collector_ship_id, drop)
 	else:
-		_bus().loot_collected.emit(drop_id, collector_ship_id, null)
+		var other_drop: Contracts.LootDropData = null
+		if not drop_dict.is_empty():
+			other_drop = Contracts.LootDropData.new()
+			other_drop.drop_id = drop_id
+			other_drop.world_pos = Vector2(float(drop_dict.get("x", 0.0)), float(drop_dict.get("y", 0.0)))
+			other_drop.gold = 0
+		bus.loot_collected.emit(drop_id, collector_ship_id, other_drop)
 
 
 @rpc("authority", "reliable")
