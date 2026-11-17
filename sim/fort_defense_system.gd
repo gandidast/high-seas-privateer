@@ -8,6 +8,7 @@ const FORT_HIT_RADIUS: float = 22.0
 const FORT_MAX_HP: float = 260.0
 const FORT_RANGE: float = 270.0
 const FORT_FIRE_INTERVAL: float = 3.8
+const MAX_COASTAL_FORTS: int = 14
 
 var forts: Dictionary = {} # fort_id (int) -> Dictionary
 var sync_revision: int = 1
@@ -36,12 +37,15 @@ func setup_island_forts(world_map: Node, rng: RandomNumberGenerator) -> void:
 			candidates = raw
 
 	if candidates.is_empty():
-		var islands: Array = Contracts.get_islands()
+		var w_seed: int = Contracts.DEFAULT_WORLD_SEED
+		if world_map != null and world_map.get("world_seed") != null:
+			w_seed = int(world_map.get("world_seed"))
+		var islands: Array = Contracts.get_islands(w_seed)
 		for isl in islands:
-			if isl.has_harbor:
+			if isl.has_harbor or isl.index == 0 or (isl.index in Contracts.SAFE_HARBOR_INDICES):
 				continue
 			var fort_angle: float = isl.harbor_angle + PI * 0.72
-			var coast_r: float = Contracts.get_island_coast_radius(isl.index, fort_angle)
+			var coast_r: float = Contracts.get_island_coast_radius(isl.index, fort_angle, w_seed)
 			var fpos: Vector2 = isl.center + Vector2.from_angle(fort_angle) * maxf(24.0, coast_r - 18.0)
 			candidates.append({
 				"fort_id": 8000 + isl.index,
@@ -53,13 +57,19 @@ func setup_island_forts(world_map: Node, rng: RandomNumberGenerator) -> void:
 	var bus := _bus()
 	var placed: int = 0
 	for entry_var in candidates:
+		if placed >= MAX_COASTAL_FORTS:
+			break
 		if not (entry_var is Dictionary):
 			continue
 		var entry: Dictionary = entry_var
 		var isl_idx: int = int(entry.get("island_index", placed))
-		# Keep all safe harbor islands free of hostile coastal forts
-		if isl_idx in Contracts.SAFE_HARBOR_INDICES:
+		# Keep all safe harbor islands (and island 0) free of hostile coastal forts
+		if isl_idx == 0 or (isl_idx in Contracts.SAFE_HARBOR_INDICES):
 			continue
+		if world_map != null and world_map.has_method("get_island"):
+			var isl_data: Variant = world_map.call("get_island", isl_idx)
+			if isl_data != null and bool(isl_data.get("has_harbor")):
+				continue
 		var fid: int = int(entry.get("fort_id", 8000 + isl_idx))
 		var pos: Vector2 = entry.get("world_pos", Vector2.ZERO)
 		var fname: String = str(entry.get("name", "Küsten-Fort #%d" % (placed + 1)))

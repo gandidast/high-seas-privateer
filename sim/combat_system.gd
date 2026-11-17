@@ -555,9 +555,11 @@ func _resolve_ram_pair(ship_a: Node, ship_b: Node) -> void:
 
 	_ram_cooldowns[pair_key] = RAM_COOLDOWN_SEC
 	var impact_pos: Vector2 = (pos_a + pos_b) * 0.5
-	_apply_ram_strike(ship_a, id_a, ship_b, id_b, approach_a, ram_a, stats_b, impact_pos)
+	var eff_approach_a: float = minf(approach_a, impact_speed)
+	var eff_approach_b: float = minf(approach_b, impact_speed)
+	_apply_ram_strike(ship_a, id_a, ship_b, id_b, eff_approach_a, ram_a, stats_b, impact_pos)
 	if not bool(ship_b.get("is_sunk")) and not bool(ship_a.get("is_sunk")):
-		_apply_ram_strike(ship_b, id_b, ship_a, id_a, approach_b, ram_b, stats_a, impact_pos)
+		_apply_ram_strike(ship_b, id_b, ship_a, id_a, eff_approach_b, ram_b, stats_a, impact_pos)
 
 
 func _apply_ram_strike(
@@ -572,9 +574,15 @@ func _apply_ram_strike(
 ) -> void:
 	if approach < 12.0 and not (ram_bonus > 0.0 and approach > 4.0):
 		return
-	var raw_dmg: float = clampf(approach * 0.24, 5.0, 24.0) + ram_bonus
+	var base_impact: float = clampf(approach * 0.22, 4.0, 42.0)
+	var excess: float = maxf(0.0, approach - 85.0)
+	var surge: float = minf(28.0, (excess * excess) / 320.0)
+	var scaled_ram: float = ram_bonus * clampf(approach / 95.0, 0.55, 1.55)
+	var raw_dmg: float = base_impact + surge + scaled_ram
 	var armor: float = defender_stats.armor if defender_stats != null else 0.0
-	_apply_direct_damage(defender, defender_id, maxf(4.0, raw_dmg - armor * 0.45), impact_pos, attacker_id)
+	# Ramming pierces 50% of defender armor before applying hybrid armor mitigation
+	var final_dmg: float = _apply_hybrid_armor(raw_dmg, armor * 0.5, 4.0)
+	_apply_direct_damage(defender, defender_id, final_dmg, impact_pos, attacker_id)
 	if ram_bonus <= 0.0 and not bool(attacker.get("is_sunk")):
 		_apply_direct_damage(attacker, attacker_id, 4.0, impact_pos, defender_id)
 
@@ -615,13 +623,19 @@ func get_fort_sync_revision() -> int:
 # HIT RESOLUTION & DAMAGE
 # ==============================================================================
 
+static func _apply_hybrid_armor(raw_damage: float, armor: float, min_damage: float = 2.0) -> float:
+	var eff_armor: float = maxf(0.0, armor)
+	var armor_mult: float = 18.0 / (18.0 + eff_armor)
+	return maxf(min_damage, raw_damage * armor_mult - eff_armor * 0.25)
+
+
 func _apply_ship_hit(proj: Dictionary, target: Node, target_id: int, impact_pos: Vector2, hit_zone: String) -> void:
 	if _is_ship_harbor_protected(target):
 		return
 	var zone_mult: float = 1.10 if hit_zone == "bow" else (1.25 if hit_zone == "stern" else 1.0)
 	var stats: Contracts.ShipStats = target.get("stats")
 	var armor: float = stats.armor if stats != null else 0.0
-	var dmg: float = maxf(2.0, float(proj["damage"]) * zone_mult - armor * 0.65)
+	var dmg: float = _apply_hybrid_armor(float(proj["damage"]) * zone_mult, armor, 2.0)
 
 	var is_powder_crit: bool = false
 	if stats != null and stats.explosion_hazard_damage > 0.0:
