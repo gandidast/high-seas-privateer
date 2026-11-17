@@ -13,6 +13,7 @@ var lbl_hull_title: Label = null
 var lbl_port: Label = null
 var lbl_starboard: Label = null
 var lbl_bow: Label = null
+var lbl_coords: Label = null
 var lbl_weather: Label = null
 var lbl_wanted: Label = null
 var lbl_quest: Label = null
@@ -42,6 +43,8 @@ var _last_port_rdy: bool = false
 var _last_sb_rdy: bool = false
 var _last_bow_rdy: int = -1
 var _last_death_key: String = ""
+var _last_coords_txt: String = ""
+var _last_coords_y: float = -1.0
 
 
 func build(parent: Control) -> void:
@@ -58,6 +61,16 @@ func build(parent: Control) -> void:
 	lbl_bow = _make(parent, Vector2(30.0, 160.0), 14, UIThemeHelper.COL_MUTED)
 	lbl_bow.text = "[Space] Bug-Geschütz"
 	lbl_bow.visible = false
+	lbl_coords = _make(parent, Vector2(16.0, 176.0), 14, UIThemeHelper.COL_TURQUOISE)
+	var coords_style := UIThemeHelper.make_box_style(UIThemeHelper.COL_HUD_PANEL_BG, UIThemeHelper.COL_BRASS_DIM, 4, 1, 6)
+	coords_style.content_margin_top = 2.0
+	coords_style.content_margin_bottom = 2.0
+	coords_style.content_margin_left = 8.0
+	coords_style.content_margin_right = 8.0
+	lbl_coords.add_theme_stylebox_override("normal", coords_style)
+	lbl_coords.text = "POS: X +0  Y +0"
+	_last_coords_txt = lbl_coords.text
+	_last_coords_y = 176.0
 
 	lbl_weather = _make(parent, Vector2(450.0, 25.0), 16, UIThemeHelper.COL_TURQUOISE)
 	lbl_wanted = _make(parent, Vector2(700.0, 25.0), 16, UIThemeHelper.COL_MUTED, 240.0, HORIZONTAL_ALIGNMENT_RIGHT)
@@ -196,6 +209,7 @@ func update(
 		elif bow_state == 1:
 			lbl_bow.text = "[Space] Bug-Geschütz (Lädt...)"
 			lbl_bow.add_theme_color_override("font_color", UIThemeHelper.COL_MUTED)
+	sync_coords_pos(bow_state >= 0)
 
 	var w_pct: int = int(round(clampf(wind_strength, 0.0, 1.0) * 100.0))
 	if w_pct != _last_wind_pct:
@@ -256,3 +270,26 @@ func update(
 			lbl_harbor.text = "[F] Hafen von %s betreten" % current_harbor_name
 
 	return class_title
+
+
+func sync_coords_pos(has_bow: bool) -> void:
+	if lbl_coords == null:
+		return
+	var panel_bottom: float = 16.0 + (178.0 if has_bow else 156.0)
+	var target_y: float = panel_bottom + 4.0
+	if not is_equal_approx(target_y, _last_coords_y):
+		_last_coords_y = target_y
+		lbl_coords.position = Vector2(16.0, target_y).round()
+
+
+func update_coords(world_pos: Vector2) -> void:
+	if lbl_coords == null:
+		return
+	var cx: int = int(round(world_pos.x))
+	var cy: int = int(round(world_pos.y))
+	var sx: String = "+%d" % cx if cx >= 0 else "%d" % cx
+	var sy: String = "+%d" % cy if cy >= 0 else "%d" % cy
+	var txt: String = "POS: X %s  Y %s" % [sx, sy]
+	if _last_coords_txt != txt:
+		_last_coords_txt = txt
+		lbl_coords.text = txt

@@ -1,9 +1,9 @@
 class_name WorldMapOverlay
 extends Control
 ## Fullscreen toggleable Nautical Sea Chart Overlay ([M] or Minimap click).
-## Renders the entire 7200x7200 sea, all 8 islands with Safe Harbor vs Wild/Fort
+## Renders the entire world sea (2 * WORLD_HALF_EXTENT), all islands with Safe Harbor vs Wild/Fort
 ## badges, live ships, active forts, Kraken, loot/ghost wrecks, quest routes,
-## coordinate grid, compass rose, and island directory legend.
+## coordinate grid, compass rose, and scrollable/adaptive island directory legend.
 
 signal map_toggled(open: bool)
 
@@ -25,9 +25,11 @@ var pulse_time: float = 0.0
 
 var _baked_seed: int = -999999
 var _baked_island_count: int = -1
+var _baked_extent: float = -1.0
 var _baked_tex: ImageTexture = null
 var _hover_close: bool = false
 var _cursor_screen_pos: Vector2 = Vector2(-9999.0, -9999.0)
+var _sidebar_scroll: int = 0
 var _ship_tri: PackedVector2Array = PackedVector2Array([Vector2.ZERO, Vector2.ZERO, Vector2.ZERO])
 var _kraken_poly: PackedVector2Array = PackedVector2Array([Vector2.ZERO, Vector2.ZERO, Vector2.ZERO, Vector2.ZERO])
 
@@ -88,6 +90,14 @@ func _gui_input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
+		if mb.pressed and (mb.button_index == MOUSE_BUTTON_WHEEL_UP or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN):
+			var side_rect := Rect2(panel_pos + SIDEBAR_REL.position, SIDEBAR_REL.size)
+			if side_rect.has_point(mb.position):
+				var delta_scroll: int = -1 if mb.button_index == MOUSE_BUTTON_WHEEL_UP else 1
+				_sidebar_scroll = maxi(0, _sidebar_scroll + delta_scroll)
+				queue_redraw()
+			accept_event()
+			return
 		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
 			var close_rect := Rect2(panel_pos + CLOSE_BTN_REL.position, CLOSE_BTN_REL.size)
 			var panel_rect := Rect2(panel_pos, PANEL_SIZE)
@@ -98,10 +108,12 @@ func _gui_input(event: InputEvent) -> void:
 
 func bake_static_map(world_seed: int, islands: Array) -> void:
 	islands_ref = islands.duplicate()
-	if _baked_tex != null and _baked_seed == world_seed and _baked_island_count == islands.size():
+	if _baked_tex != null and _baked_seed == world_seed and _baked_island_count == islands.size() and is_equal_approx(_baked_extent, Contracts.WORLD_HALF_EXTENT):
 		return
 	_baked_seed = world_seed
 	_baked_island_count = islands.size()
+	_baked_extent = Contracts.WORLD_HALF_EXTENT
+	_sidebar_scroll = 0
 
 	var scale_f: float = float(MAP_PX) / (Contracts.WORLD_HALF_EXTENT * 2.0)
 	var center_px := Vector2(float(MAP_PX) * 0.5, float(MAP_PX) * 0.5)
@@ -173,7 +185,8 @@ func _draw() -> void:
 	var header_rect := Rect2(panel_pos + Vector2(4.0, 4.0), Vector2(PANEL_SIZE.x - 8.0, 40.0))
 	draw_rect(header_rect, UIThemeHelper.COL_HEADER_BG, true)
 	draw_line(Vector2(header_rect.position.x, header_rect.end.y), Vector2(header_rect.end.x, header_rect.end.y), UIThemeHelper.COL_BRASS_DIM, 1.5)
-	UIThemeHelper.draw_sharp_text(self, font, panel_pos + Vector2(16.0, 31.0), "SEEKARTE DER KARIBIK (7200 × 7200)", 19, UIThemeHelper.COL_GOLD)
+	var world_span: int = int(round(Contracts.WORLD_HALF_EXTENT * 2.0))
+	UIThemeHelper.draw_sharp_text(self, font, panel_pos + Vector2(16.0, 31.0), "SEEKARTE DER KARIBIK (%d × %d)" % [world_span, world_span], 19, UIThemeHelper.COL_GOLD)
 
 	var close_rect := Rect2(panel_pos + CLOSE_BTN_REL.position, CLOSE_BTN_REL.size)
 	var close_bg: Color = Color(0.64, 0.23, 0.21, 1.0) if _hover_close else Color(0.42, 0.17, 0.16, 0.95)
@@ -193,10 +206,17 @@ func _draw_chart(map_rect: Rect2, font: Font) -> void:
 	else:
 		draw_rect(map_rect, Color(0.055, 0.135, 0.235, 1.0), true)
 
-	# Coordinate grid every 1200 world units
+	# Dynamic coordinate grid scaled to Contracts.WORLD_HALF_EXTENT
+	var half_ext: float = Contracts.WORLD_HALF_EXTENT
+	var grid_step: float = half_ext / 3.0
+	if grid_step >= 1000.0:
+		grid_step = snappedf(grid_step, 200.0)
+	grid_step = maxf(200.0, grid_step)
+	var max_k: int = int(floor((half_ext - 1.0) / grid_step))
 	var grid_col := Color(0.36, 0.56, 0.74, 0.22)
 	var axis_col := Color(0.48, 0.70, 0.86, 0.34)
-	for coord in [-2400.0, -1200.0, 0.0, 1200.0, 2400.0]:
+	for k in range(-max_k, max_k + 1):
+		var coord: float = float(k) * grid_step
 		var p_h: Vector2 = _world_to_chart(Vector2(0.0, coord), map_rect)
 		var p_v: Vector2 = _world_to_chart(Vector2(coord, 0.0), map_rect)
 		var col: Color = axis_col if is_zero_approx(coord) else grid_col
@@ -225,6 +245,10 @@ func _draw_chart(map_rect: Rect2, font: Font) -> void:
 
 	# Safe Harbor circles & Wild Island badges + Island Names
 	var scale_f: float = map_rect.size.x / (Contracts.WORLD_HALF_EXTENT * 2.0)
+	var compact_pills: bool = islands_ref.size() > 10
+	var pill_w: float = 122.0 if compact_pills else 144.0
+	var pill_h: float = 28.0 if compact_pills else 32.0
+	var pill_font: int = 12 if compact_pills else 14
 	for isl_var in islands_ref:
 		var isl: Contracts.IslandData = isl_var
 		if isl == null:
@@ -232,7 +256,7 @@ func _draw_chart(map_rect: Rect2, font: Font) -> void:
 		var ic: Vector2 = _world_to_chart(isl.center, map_rect)
 		if isl.has_harbor:
 			var hp: Vector2 = _world_to_chart(isl.harbor_pos, map_rect)
-			var hr: float = maxf(9.0, isl.harbor_radius * scale_f)
+			var hr: float = maxf(7.0 if compact_pills else 9.0, isl.harbor_radius * scale_f)
 			draw_circle(hp, hr, Color(0.24, 0.88, 0.54, 0.16))
 			draw_arc(hp, hr, 0.0, TAU, 20, Color(0.28, 0.94, 0.58, 0.85), 1.5)
 			draw_rect(Rect2(hp - Vector2(3.5, 3.5), Vector2(7.0, 7.0)), UIThemeHelper.COL_GOLD, true)
@@ -240,11 +264,11 @@ func _draw_chart(map_rect: Rect2, font: Font) -> void:
 
 		var badge_col: Color = Color(0.26, 0.90, 0.56) if isl.has_harbor else Color(0.95, 0.44, 0.34)
 		var sub_txt: String = "SICHERER HAFEN" if isl.has_harbor else ("WILDNIS / FORT" if bool(island_fort_alive.get(isl.index, false)) else "WILDNIS")
-		var label_pos: Vector2 = (ic + Vector2(-72.0, -maxf(18.0, isl.radius * scale_f) - 24.0)).clamp(map_rect.position + Vector2(6.0, 6.0), map_rect.end - Vector2(150.0, 38.0)).round()
-		var pill_rect := Rect2(label_pos, Vector2(144.0, 32.0))
+		var label_pos: Vector2 = (ic + Vector2(-pill_w * 0.5, -maxf(14.0 if compact_pills else 18.0, isl.radius * scale_f) - (pill_h - 8.0))).clamp(map_rect.position + Vector2(6.0, 6.0), map_rect.end - Vector2(pill_w + 6.0, pill_h + 6.0)).round()
+		var pill_rect := Rect2(label_pos, Vector2(pill_w, pill_h))
 		UIThemeHelper.draw_clean_box(self, pill_rect, Color(0.06, 0.07, 0.11, 0.84), badge_col)
-		UIThemeHelper.draw_sharp_text(self, font, label_pos + Vector2(4.0, 15.0), isl.name, 14, UIThemeHelper.COL_IVORY, HORIZONTAL_ALIGNMENT_CENTER, 136)
-		UIThemeHelper.draw_sharp_text(self, font, label_pos + Vector2(4.0, 29.0), sub_txt, 14, badge_col, HORIZONTAL_ALIGNMENT_CENTER, 136)
+		UIThemeHelper.draw_sharp_text(self, font, label_pos + Vector2(4.0, 13.0 if compact_pills else 15.0), isl.name, pill_font, UIThemeHelper.COL_IVORY, HORIZONTAL_ALIGNMENT_CENTER, int(pill_w) - 8)
+		UIThemeHelper.draw_sharp_text(self, font, label_pos + Vector2(4.0, 25.0 if compact_pills else 29.0), sub_txt, pill_font, badge_col, HORIZONTAL_ALIGNMENT_CENTER, int(pill_w) - 8)
 
 	# Active forts
 	for f_info_var in fort_sources.values():
@@ -346,15 +370,26 @@ func _draw_chart(map_rect: Rect2, font: Font) -> void:
 func _draw_sidebar(side_rect: Rect2, map_rect: Rect2, font: Font) -> void:
 	UIThemeHelper.draw_framed_panel(self, side_rect, UIThemeHelper.COL_PANEL_INSET, UIThemeHelper.COL_BRASS_DIM, Color(0.22, 0.18, 0.14, 0.55))
 	var x: float = side_rect.position.x + 12.0
-	var y: float = side_rect.position.y + 24.0
+	var y: float = side_rect.position.y + 22.0
 	var w: float = side_rect.size.x - 24.0
 
-	UIThemeHelper.draw_sharp_text(self, font, Vector2(x, y), "LEGENDE", 16, UIThemeHelper.COL_GOLD)
-	y += 18.0
+	var harbor_count: int = 0
+	var wild_count: int = 0
+	for isl_var in islands_ref:
+		var isl_c: Contracts.IslandData = isl_var
+		if isl_c == null:
+			continue
+		if isl_c.has_harbor:
+			harbor_count += 1
+		else:
+			wild_count += 1
+
+	UIThemeHelper.draw_sharp_text(self, font, Vector2(x, y), "LEGENDE", 15, UIThemeHelper.COL_GOLD)
+	y += 17.0
 	var legend_items: Array = [
 		[Color.WHITE, "Dein Schiff (Kurs)"],
-		[Color(0.26, 0.90, 0.56), "Sicherer Hafen (3)"],
-		[Color(0.98, 0.52, 0.20), "Wildes Fort / Insel (5)"],
+		[Color(0.26, 0.90, 0.56), "Sicherer Hafen (%d)" % harbor_count],
+		[Color(0.98, 0.52, 0.20), "Wildes Fort / Insel (%d)" % wild_count],
 		[Color(0.94, 0.28, 0.26), "Piratenschiff"],
 		[Color(0.38, 0.76, 0.98), "Händler / Gold-Galeone"],
 		[Color(0.32, 0.56, 0.98), "Königliche Marine"],
@@ -363,28 +398,54 @@ func _draw_sidebar(side_rect: Rect2, map_rect: Rect2, font: Font) -> void:
 		[Color(0.76, 0.44, 0.98), "Geisterwrack / Beute"]
 	]
 	for entry in legend_items:
-		draw_rect(Rect2(x, y - 9.0, 10.0, 10.0), entry[0] as Color, true)
-		draw_rect(Rect2(x, y - 9.0, 10.0, 10.0), UIThemeHelper.COL_OUTLINE, false, 1.0)
-		UIThemeHelper.draw_sharp_text(self, font, Vector2(x + 18.0, y), entry[1], 14, UIThemeHelper.COL_IVORY)
-		y += 20.0
+		draw_rect(Rect2(x, y - 9.0, 9.0, 9.0), entry[0] as Color, true)
+		draw_rect(Rect2(x, y - 9.0, 9.0, 9.0), UIThemeHelper.COL_OUTLINE, false, 1.0)
+		UIThemeHelper.draw_sharp_text(self, font, Vector2(x + 16.0, y), entry[1], 13, UIThemeHelper.COL_IVORY)
+		y += 17.0
 
-	y += 6.0
+	y += 2.0
 	draw_line(Vector2(x, y), Vector2(x + w, y), UIThemeHelper.COL_BRASS_DIM, 1.5)
-	y += 22.0
-	UIThemeHelper.draw_sharp_text(self, font, Vector2(x, y), "INSELN & HÄFEN (8)", 16, UIThemeHelper.COL_GOLD)
-	y += 20.0
+	y += 19.0
 
+	var valid_islands: Array[Contracts.IslandData] = []
 	for isl_var in islands_ref:
 		var isl: Contracts.IslandData = isl_var
-		if isl == null:
-			continue
-		var col: Color = Color(0.26, 0.90, 0.56) if isl.has_harbor else Color(0.95, 0.52, 0.36)
-		var tag: String = "HAFEN" if isl.has_harbor else "WILD"
-		UIThemeHelper.draw_sharp_text(self, font, Vector2(x, y), isl.name, 14, UIThemeHelper.COL_IVORY)
-		UIThemeHelper.draw_sharp_text(self, font, Vector2(x, y), tag, 14, col, HORIZONTAL_ALIGNMENT_RIGHT, int(w))
-		y += 20.0
+		if isl != null:
+			valid_islands.append(isl)
 
 	var footer_y: float = side_rect.end.y - 38.0
+	var list_bottom: float = footer_y - 18.0
+	var list_top: float = y + 6.0
+	var avail_h: float = maxf(16.0, list_bottom - list_top)
+	var total_cnt: int = valid_islands.size()
+	var row_h: float = clampf(floor(avail_h / float(maxi(1, total_cnt))), 16.0, 20.0)
+	var max_visible: int = maxi(1, int(floor(avail_h / row_h)))
+	var max_scroll: int = maxi(0, total_cnt - max_visible)
+	_sidebar_scroll = clampi(_sidebar_scroll, 0, max_scroll)
+
+	UIThemeHelper.draw_sharp_text(self, font, Vector2(x, y), "INSELN & HÄFEN (%d)" % total_cnt, 15, UIThemeHelper.COL_GOLD)
+	if max_scroll > 0:
+		UIThemeHelper.draw_sharp_text(self, font, Vector2(x, y), "Scroll %d-%d" % [_sidebar_scroll + 1, mini(total_cnt, _sidebar_scroll + max_visible)], 12, UIThemeHelper.COL_MUTED, HORIZONTAL_ALIGNMENT_RIGHT, int(w))
+
+	var row_font: int = 13 if row_h < 18.0 else 14
+	var list_w: float = w - (8.0 if max_scroll > 0 else 0.0)
+	var row_y: float = list_top + row_h - 3.0
+	for i in range(_sidebar_scroll, mini(total_cnt, _sidebar_scroll + max_visible)):
+		var isl: Contracts.IslandData = valid_islands[i]
+		var col: Color = Color(0.26, 0.90, 0.56) if isl.has_harbor else Color(0.95, 0.52, 0.36)
+		var tag: String = "HAFEN" if isl.has_harbor else "WILD"
+		UIThemeHelper.draw_sharp_text(self, font, Vector2(x, row_y), isl.name, row_font, UIThemeHelper.COL_IVORY)
+		UIThemeHelper.draw_sharp_text(self, font, Vector2(x, row_y), tag, row_font, col, HORIZONTAL_ALIGNMENT_RIGHT, int(list_w))
+		row_y += row_h
+
+	if max_scroll > 0:
+		var track_rect := Rect2(x + w - 4.0, list_top, 4.0, avail_h)
+		draw_rect(track_rect, Color(0.14, 0.13, 0.19, 0.90), true)
+		var thumb_frac: float = float(max_visible) / float(total_cnt)
+		var thumb_h: float = maxf(14.0, avail_h * thumb_frac)
+		var thumb_y: float = list_top + (avail_h - thumb_h) * (float(_sidebar_scroll) / float(max_scroll))
+		draw_rect(Rect2(track_rect.position.x, thumb_y, 4.0, thumb_h), UIThemeHelper.COL_BRASS, true)
+
 	draw_line(Vector2(x, footer_y - 14.0), Vector2(x + w, footer_y - 14.0), UIThemeHelper.COL_BRASS_DIM, 1.0)
 	if player_ship != null:
 		var ppos: Vector2 = player_ship.get("world_pos")

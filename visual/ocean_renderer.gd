@@ -7,7 +7,7 @@ extends Node2D
 const SHADER_PATH := "res://visual/ocean_shader.gdshader"
 const OUTLINE_COLOR := Color(0.094, 0.078, 0.145, 1.0) # #181425 crisp dark outline
 const MIN_QUAD_SIZE := Vector2(768.0, 448.0)
-const DEPTH_MAP_RES: int = 1024
+const DEPTH_MAP_RES: int = 2048
 const DEPTH_MAP_HALF_EXTENT: float = Contracts.WORLD_HALF_EXTENT
 const SHADOW_COLOR := Color(0.06, 0.05, 0.09, 0.28)
 

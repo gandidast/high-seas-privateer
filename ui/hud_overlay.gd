@@ -61,6 +61,7 @@ var _last_bow_ready: float = -1.0
 var _last_heading_q: float = -999.0
 var _last_wind_q: float = -999.0
 var _last_quest_player_pos: Vector2 = Vector2(INF, INF)
+var _last_coords_pos: Vector2 = Vector2(INF, INF)
 
 var _arrow_poly: PackedVector2Array = PackedVector2Array([Vector2.ZERO, Vector2.ZERO, Vector2.ZERO])
 var _wind_vane_poly: PackedVector2Array = PackedVector2Array([Vector2.ZERO, Vector2.ZERO, Vector2.ZERO])
@@ -154,6 +155,7 @@ func setup(
 			}
 
 	_display_wind_angle = wind_dir.angle()
+	_last_coords_pos = Vector2(INF, INF)
 	_bake_maps_from_world()
 	_sync_map_refs()
 	_update_labels()
@@ -181,6 +183,7 @@ func _process(delta: float) -> void:
 
 	if player_ship != _last_player_ref:
 		_last_player_ref = player_ship
+		_last_coords_pos = Vector2(INF, INF)
 		_sync_map_refs()
 		_mark_dirty(true, true)
 
@@ -271,6 +274,9 @@ func _check_periodic_changes(wind_moving: bool) -> void:
 		var sail: int = int(player_ship.get("sail_state"))
 		var heading: float = float(player_ship.get("heading"))
 		var p_pos: Vector2 = player_ship.get("world_pos")
+		if p_pos.distance_squared_to(_last_coords_pos) >= 64.0:
+			_last_coords_pos = p_pos
+			_labels.update_coords(p_pos)
 		var quest_moved: bool = (not active_quests.is_empty()) and (
 			p_pos.distance_squared_to(_last_quest_player_pos) > 16.0
 			or active_quests[0].quest_type == Contracts.QuestType.BOUNTY
@@ -461,6 +467,11 @@ func _sync_dynamic_layout() -> void:
 
 func _update_labels() -> void:
 	var q_pos: Vector2 = _resolve_quest_target_pos(active_quests[0]) if not active_quests.is_empty() else Vector2.ZERO
+	if player_ship != null:
+		var p_pos: Vector2 = player_ship.get("world_pos")
+		if _last_coords_pos.x == INF or p_pos.distance_squared_to(_last_coords_pos) >= 64.0:
+			_last_coords_pos = p_pos
+			_labels.update_coords(p_pos)
 	_player_class_title = _labels.update(
 		player_ship,
 		_read_broadside_ready(),

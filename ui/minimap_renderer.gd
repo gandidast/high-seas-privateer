@@ -1,7 +1,7 @@
 class_name MinimapRenderer
 extends Control
 ## Crisp chart-style Minimap widget for HudOverlay.
-## Covers the full 7200x7200 world, distinguishes 3 Safe Harbors from 5 Wild Islands,
+## Covers the full world (2 * WORLD_HALF_EXTENT), distinguishes Safe Harbors from Wild Islands,
 ## bakes static ocean/islands once per seed, and toggles WorldMapOverlay on click.
 
 signal world_map_toggle_requested
@@ -10,7 +10,6 @@ const CARD_SIZE: Vector2 = Vector2(270.0, 316.0)
 const MAP_RECT: Rect2 = Rect2(11.0, 11.0, 248.0, 240.0)
 const MAP_W: int = 248
 const MAP_H: int = 240
-const SCALE_F: float = 118.0 / Contracts.WORLD_HALF_EXTENT
 const MAP_CENTER: Vector2 = Vector2(124.0, 120.0)
 
 var player_ship: Node = null
@@ -24,6 +23,7 @@ var pulse_time: float = 0.0
 
 var _baked_seed: int = -999999
 var _baked_island_count: int = -1
+var _baked_extent: float = -1.0
 var _baked_map_tex: ImageTexture = null
 var _fort_tex: ImageTexture = null
 var _player_tex: ImageTexture = null
@@ -48,11 +48,17 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 
 
+static func _get_scale_f() -> float:
+	return minf(float(MAP_W), float(MAP_H)) * 0.47 / Contracts.WORLD_HALF_EXTENT
+
+
 func bake_static_map(world_seed: int, islands: Array) -> void:
-	if _baked_map_tex != null and _baked_seed == world_seed and _baked_island_count == islands.size():
+	if _baked_map_tex != null and _baked_seed == world_seed and _baked_island_count == islands.size() and is_equal_approx(_baked_extent, Contracts.WORLD_HALF_EXTENT):
 		return
 	_baked_seed = world_seed
 	_baked_island_count = islands.size()
+	_baked_extent = Contracts.WORLD_HALF_EXTENT
+	var scale_f: float = _get_scale_f()
 
 	var img := Image.create(MAP_W, MAP_H, false, Image.FORMAT_RGBA8)
 	var ocean_col := Color(0.06, 0.14, 0.24, 0.96)
@@ -67,11 +73,11 @@ func bake_static_map(world_seed: int, islands: Array) -> void:
 		var isl: Contracts.IslandData = isl_var
 		if isl == null:
 			continue
-		var ic: Vector2 = MAP_CENTER + isl.center * SCALE_F
-		var r_px: int = int(ceil((isl.radius * 1.35 + 140.0) * SCALE_F))
+		var ic: Vector2 = MAP_CENTER + isl.center * scale_f
+		var r_px: int = int(ceil((isl.radius * 1.35 + 140.0) * scale_f))
 		for py in range(maxi(0, int(floor(ic.y)) - r_px), mini(MAP_H - 1, int(ceil(ic.y)) + r_px) + 1):
 			for px in range(maxi(0, int(floor(ic.x)) - r_px), mini(MAP_W - 1, int(ceil(ic.x)) + r_px) + 1):
-				var d: float = Contracts.get_water_depth((Vector2(float(px) + 0.5, float(py) + 0.5) - MAP_CENTER) / SCALE_F, world_seed)
+				var d: float = Contracts.get_water_depth((Vector2(float(px) + 0.5, float(py) + 0.5) - MAP_CENTER) / scale_f, world_seed)
 				if d <= -0.55:
 					img.set_pixel(px, py, Color(0.20, 0.40, 0.24, 1.0))
 				elif d <= -0.18:
@@ -81,13 +87,13 @@ func bake_static_map(world_seed: int, islands: Array) -> void:
 				elif d <= 0.22:
 					img.set_pixel(px, py, Color(0.11, 0.34, 0.44, 0.96))
 
-	# Distinct Safe Harbor anchor/diamond marker ONLY on the 3 safe harbors
+	# Distinct Safe Harbor anchor/diamond marker ONLY on safe harbors
 	var harbor_emerald := Color(0.26, 0.90, 0.56, 1.0)
 	for isl_var in islands:
 		var isl: Contracts.IslandData = isl_var
 		if isl == null or not isl.has_harbor:
 			continue
-		var hp: Vector2 = (MAP_CENTER + isl.harbor_pos * SCALE_F).round()
+		var hp: Vector2 = (MAP_CENTER + isl.harbor_pos * scale_f).round()
 		for dy_off in range(-3, 4):
 			for dx_off in range(-3, 4):
 				var manhattan: int = absi(dx_off) + absi(dy_off)
@@ -180,6 +186,7 @@ func _draw() -> void:
 
 
 func _draw_dynamic_forts_and_loot(mc: Vector2) -> void:
+	var scale_f: float = _get_scale_f()
 	var has_combat_forts: bool = combat_system_ref != null and not combat_system_ref.forts.is_empty()
 	var fort_list: Array = combat_system_ref.forts.values() if has_combat_forts else tracked_forts.values()
 	for f_info_var in fort_list:
@@ -187,7 +194,7 @@ func _draw_dynamic_forts_and_loot(mc: Vector2) -> void:
 		if bool(f_info.get("destroyed", false)):
 			continue
 		var pos_val: Vector2 = f_info.get("world_pos", f_info.get("pos", Vector2.ZERO))
-		var fp: Vector2 = (mc + pos_val * SCALE_F).round()
+		var fp: Vector2 = (mc + pos_val * scale_f).round()
 		if MAP_RECT.has_point(fp) and _fort_tex != null:
 			draw_texture_rect(_fort_tex, Rect2((fp - Vector2(3.5, 3.5)).round(), Vector2(7.0, 7.0)), false)
 
@@ -196,18 +203,19 @@ func _draw_dynamic_forts_and_loot(mc: Vector2) -> void:
 			var d: Contracts.LootDropData = drop_var
 			if d == null:
 				continue
-			var lp: Vector2 = (mc + d.world_pos * SCALE_F).round()
+			var lp: Vector2 = (mc + d.world_pos * scale_f).round()
 			if MAP_RECT.has_point(lp):
 				var lcol: Color = Color(0.76, 0.44, 0.98) if d.quest_id == "ghost_wreck" else (UIThemeHelper.COL_TURQUOISE if d.is_salvage_target else Color(0.95, 0.68, 0.22))
 				draw_rect(Rect2(lp - Vector2(2.0, 2.0), Vector2(4.0, 4.0)), lcol)
 
 
 func _draw_dynamic_ships(mc: Vector2) -> void:
+	var scale_f: float = _get_scale_f()
 	for ship_var in all_ships_ref.values():
 		var s: Node = ship_var
 		if s == null or s == player_ship or bool(s.get("is_sunk")):
 			continue
-		var sp: Vector2 = (mc + s.get("world_pos") * SCALE_F).round()
+		var sp: Vector2 = (mc + s.get("world_pos") * scale_f).round()
 		if not MAP_RECT.has_point(sp):
 			continue
 		var fac: int = int(s.get("faction"))
@@ -228,8 +236,9 @@ func _draw_dynamic_ships(mc: Vector2) -> void:
 
 
 func _draw_dynamic_markers(mc: Vector2) -> void:
+	var scale_f: float = _get_scale_f()
 	if bool(tracked_sea_monster.get("active", false)):
-		var mp: Vector2 = (mc + tracked_sea_monster.get("pos", Vector2.ZERO) * SCALE_F).round().clamp(MAP_RECT.position + Vector2(9.0, 9.0), MAP_RECT.end - Vector2(9.0, 9.0))
+		var mp: Vector2 = (mc + tracked_sea_monster.get("pos", Vector2.ZERO) * scale_f).round().clamp(MAP_RECT.position + Vector2(9.0, 9.0), MAP_RECT.end - Vector2(9.0, 9.0))
 		draw_arc(mp, 8.0 + 3.0 * sin(pulse_time * 6.0), 0.0, TAU, 18, Color(0.98, 0.30, 0.75, 0.85), 1.5)
 		_kraken_poly[0] = mp + Vector2(0.0, -7.0); _kraken_poly[1] = mp + Vector2(7.0, 0.0)
 		_kraken_poly[2] = mp + Vector2(0.0, 7.0); _kraken_poly[3] = mp + Vector2(-7.0, 0.0)
@@ -242,11 +251,11 @@ func _draw_dynamic_markers(mc: Vector2) -> void:
 			var boss: Node = all_ships_ref[q.target_ship_id]
 			if boss != null and not bool(boss.get("is_sunk")):
 				tpos = boss.get("world_pos")
-		var qp: Vector2 = (mc + tpos * SCALE_F).round().clamp(MAP_RECT.position + Vector2(6.0, 6.0), MAP_RECT.end - Vector2(6.0, 6.0))
+		var qp: Vector2 = (mc + tpos * scale_f).round().clamp(MAP_RECT.position + Vector2(6.0, 6.0), MAP_RECT.end - Vector2(6.0, 6.0))
 		draw_rect(Rect2(qp - Vector2(5.0, 5.0), Vector2(10.0, 10.0)), Color(1.0, 0.90, 0.20, 0.55 + 0.45 * sin(pulse_time * 5.0)), false, 2.0)
 
 	if player_ship != null:
-		var pp: Vector2 = (mc + player_ship.get("world_pos") * SCALE_F).round().clamp(MAP_RECT.position + Vector2(4.0, 4.0), MAP_RECT.end - Vector2(4.0, 4.0))
+		var pp: Vector2 = (mc + player_ship.get("world_pos") * scale_f).round().clamp(MAP_RECT.position + Vector2(4.0, 4.0), MAP_RECT.end - Vector2(4.0, 4.0))
 		if _player_tex != null:
 			draw_texture_rect(_player_tex, Rect2((pp - Vector2(3.5, 3.5)).round(), Vector2(7.0, 7.0)), false)
 		draw_line(pp, (pp + Vector2.from_angle(float(player_ship.get("heading"))) * 11.0).round(), UIThemeHelper.COL_GOLD, 2.0)
