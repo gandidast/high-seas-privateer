@@ -147,7 +147,9 @@ func populate_initial_fleet(merchant_count: int = 3, pirate_count: int = 3) -> v
 		spawn_ai_ship(Contracts.ShipFaction.MERCHANT, spawn_pos, false, "", tier, is_galleon)
 
 	for j in range(pirate_count):
-		var spawn_pos: Vector2 = _pick_open_sea_ring_pos(650.0, 1800.0, float(j) * (TAU / maxf(1.0, float(pirate_count))) + 0.7)
+		var min_r: float = 650.0 if j == 0 else maxf(800.0, Contracts.WORLD_HALF_EXTENT * 0.12)
+		var max_r: float = 1800.0 if j == 0 else maxf(1800.0, Contracts.WORLD_HALF_EXTENT * 0.45)
+		var spawn_pos: Vector2 = _pick_open_sea_ring_pos(min_r, max_r, float(j) * (TAU / maxf(1.0, float(pirate_count))) + 0.7)
 		var p_tier: int = Contracts.ShipClass.BRIGANTINE if j == 0 else (Contracts.ShipClass.SCHOONER if j == 1 else _pick_pirate_tier())
 		spawn_ai_ship(Contracts.ShipFaction.PIRATE, spawn_pos, false, "", p_tier, false)
 
@@ -178,7 +180,7 @@ func spawn_ai_ship(
 			effective_tier = Contracts.ShipClass.BRIGANTINE
 		else:
 			effective_tier = Contracts.ShipClass.SLOOP
-	effective_tier = clampi(effective_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	effective_tier = clampi(effective_tier, Contracts.ShipClass.SLOOP, 8)
 
 	var ship: Node = _ship_physics_script.new()
 	var ship_label: String = _pick_ship_label(sid, faction, boss_name, is_treasure_galleon, effective_tier)
@@ -584,7 +586,8 @@ func _pick_open_sea_retreat(ship_pos: Vector2, all_ships: Dictionary) -> Vector2
 		away_dir = away_dir.normalized().rotated(_rng.randf_range(-0.35, 0.35))
 
 	var max_b: float = Contracts.WORLD_HALF_EXTENT * 0.82
-	var raw_target: Vector2 = ship_pos + away_dir * 1200.0
+	var retreat_step: float = maxf(1200.0, Contracts.WORLD_HALF_EXTENT * 0.25)
+	var raw_target: Vector2 = ship_pos + away_dir * retreat_step
 	raw_target.x = clampf(raw_target.x, -max_b, max_b)
 	raw_target.y = clampf(raw_target.y, -max_b, max_b)
 	return _push_outside_safe_harbors(_find_safe_water(raw_target), 60.0)
@@ -599,9 +602,10 @@ func _pick_next_patrol_waypoint(brain: Dictionary) -> void:
 func _choose_offshore_patrol_waypoint(prev_idx: int) -> Dictionary:
 	var islands: Array = _get_islands()
 	if islands.is_empty():
+		var fb_ext: float = Contracts.WORLD_HALF_EXTENT * 0.45
 		return {
 			"idx": 0,
-			"pos": _find_safe_water(Vector2(_rng.randf_range(-1600.0, 1600.0), _rng.randf_range(-1600.0, 1600.0)))
+			"pos": _find_safe_water(Vector2(_rng.randf_range(-fb_ext, fb_ext), _rng.randf_range(-fb_ext, fb_ext)))
 		}
 	var next_idx: int = (maxi(0, prev_idx) + _rng.randi_range(1, maxi(1, islands.size() - 1))) % islands.size()
 	var isl: Contracts.IslandData = islands[next_idx]
@@ -728,16 +732,16 @@ func _pick_ship_label(sid: int, faction: int, boss_name: String, is_treasure_gal
 
 
 func _build_ai_stats(faction: int, is_bounty_boss: bool, hull_tier: int = 0, is_treasure_galleon: bool = false) -> Contracts.ShipStats:
-	var tier: int = clampi(hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	var tier: int = clampi(hull_tier, Contracts.ShipClass.SLOOP, 8)
 	if faction == Contracts.ShipFaction.NAVY:
 		if tier >= Contracts.ShipClass.WAR_GALLEON:
-			return _make_stats_profile(440.0, 6.5, 86.0, 1.24, 4, 19.0, 2.55, tier)
-		return _make_stats_profile(260.0, 4.0, 94.0, 1.55, 3, 17.0, 2.5, tier)
+			return _make_stats_profile(680.0, 17.0, 86.0, 1.24, 4, 19.0, 2.55, tier)
+		return _make_stats_profile(360.0, 10.0, 94.0, 1.55, 3, 17.0, 2.5, tier)
 
 	if is_bounty_boss:
 		var spec: Dictionary = Contracts.get_ship_class_spec(tier)
-		var b_hp: float = maxf(210.0, float(spec.get("base_hp", 225.0)) * 1.15)
-		var b_armor: float = float(spec.get("armor", 2.0)) + 1.5
+		var b_hp: float = maxf(260.0, float(spec.get("base_hp", 225.0)) * 1.15)
+		var b_armor: float = float(spec.get("armor", 2.0)) + 3.5
 		var b_speed: float = float(spec.get("base_speed", 95.0)) * 0.94
 		var b_turn: float = float(spec.get("turn_speed", 1.55))
 		var b_cannons: int = clampi(2 + int(tier / 2), 2, 4)
@@ -746,8 +750,8 @@ func _build_ai_stats(faction: int, is_bounty_boss: bool, hull_tier: int = 0, is_
 
 	if faction == Contracts.ShipFaction.MERCHANT:
 		if is_treasure_galleon:
-			var tg_hp: float = 340.0 if tier >= Contracts.ShipClass.WAR_GALLEON else 235.0
-			return _make_stats_profile(tg_hp, 4.5, 70.0, 1.25, 3, 14.0, 2.9, tier)
+			var tg_hp: float = 480.0 if tier >= Contracts.ShipClass.WAR_GALLEON else 310.0
+			return _make_stats_profile(tg_hp, 11.0, 70.0, 1.25, 3, 14.0, 2.9, tier)
 		return _make_stats_profile(110.0 + float(tier) * 25.0, 1.0 + float(tier) * 0.5, 76.0, 1.40, 1, 10.0, 3.3, tier)
 
 	match tier:
@@ -756,11 +760,18 @@ func _build_ai_stats(faction: int, is_bounty_boss: bool, hull_tier: int = 0, is_
 		Contracts.ShipClass.BRIGANTINE:
 			return _make_stats_profile(195.0, 2.0, 94.0, 1.58, 3, 14.0, 2.6, tier)
 		Contracts.ShipClass.FRIGATE:
-			return _make_stats_profile(275.0, 3.5, 90.0, 1.40, 3, 16.5, 2.55, tier)
+			return _make_stats_profile(350.0, 8.5, 90.0, 1.40, 3, 16.5, 2.55, tier)
 		Contracts.ShipClass.CORSAIR_CLIPPER:
 			return _make_stats_profile(195.0, 1.5, 116.0, 1.92, 2, 16.0, 2.25, tier)
 		Contracts.ShipClass.WAR_GALLEON:
-			return _make_stats_profile(420.0, 6.0, 82.0, 1.18, 4, 19.0, 2.6, tier)
+			return _make_stats_profile(620.0, 15.0, 82.0, 1.18, 4, 19.0, 2.6, tier)
+		6, 7, 8:
+			var t_spec: Dictionary = Contracts.get_ship_class_spec(tier)
+			var t_hp: float = maxf(310.0, float(t_spec.get("base_hp", 620.0)))
+			var t_armor: float = maxf(5.5, float(t_spec.get("armor", 15.0)))
+			var t_spd: float = float(t_spec.get("base_speed", 84.0))
+			var t_turn: float = float(t_spec.get("turn_speed", 1.15))
+			return _make_stats_profile(t_hp, t_armor, t_spd, t_turn, 4, 19.5, 2.5, tier)
 		_:
 			return _make_stats_profile(105.0, 0.5, 88.0, 1.75, 2, 12.0, 2.7, tier)
 
@@ -835,12 +846,13 @@ func _pick_spawn_away_from_players(all_ships: Dictionary) -> Vector2:
 
 	var anchor: Vector2 = player_positions[0] if not player_positions.is_empty() else Vector2.ZERO
 	var max_b: float = Contracts.WORLD_HALF_EXTENT * 0.85
+	var max_spawn_r: float = maxf(1800.0, Contracts.WORLD_HALF_EXTENT * 0.42)
 
 	for _i in range(24):
 		var ang: float = _rng.randf_range(-PI, PI)
-		var candidate := anchor + Vector2(cos(ang), sin(ang)) * _rng.randf_range(650.0, 1800.0)
+		var candidate := anchor + Vector2(cos(ang), sin(ang)) * _rng.randf_range(650.0, max_spawn_r)
 		if absf(candidate.x) > max_b or absf(candidate.y) > max_b:
-			candidate = Vector2(cos(ang), sin(ang)) * _rng.randf_range(650.0, 1800.0)
+			candidate = Vector2(cos(ang), sin(ang)) * _rng.randf_range(650.0, max_spawn_r)
 		if _get_depth(candidate) < 0.22 or _is_near_safe_harbor(candidate, 50.0):
 			continue
 		var too_close: bool = false

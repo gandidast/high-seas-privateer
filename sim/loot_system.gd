@@ -7,7 +7,7 @@ extends Node
 const ITEM_DB_PATH: String = "res://sim/item_database.gd"
 const COLLECT_RADIUS: float = 44.0
 const INTERACT_COLLECT_RADIUS: float = 56.0
-const MAX_FLOTSAM_COUNT: int = 4
+const MAX_FLOTSAM_COUNT: int = 26
 const FLOTSAM_SPAWN_INTERVAL: float = 50.0
 
 const GHOST_WRECK_ITEMS: Array[String] = [
@@ -203,7 +203,7 @@ func spawn_ship_wreck_loot(
 	drop.is_salvage_target = false
 	drop.lifetime = 55.0
 
-	var eff_tier: int = clampi(hull_tier, 0, 5)
+	var eff_tier: int = clampi(hull_tier, 0, 8)
 	var is_high_tier: bool = (
 		eff_tier >= Contracts.ShipClass.CORSAIR_CLIPPER
 		or faction == Contracts.ShipFaction.NAVY

@@ -21,7 +21,7 @@ const SYNC_INTERVAL: float = 0.058 # Fires cleanly every 2 ticks on 30Hz physics
 const KEYFRAME_INTERVAL: float = 10.0 # Safety full-state keyframe interval (WebSocket/TCP is reliable)
 const INPUT_INTERVAL: float = 0.05
 const AUTOSAVE_INTERVAL: float = 15.0
-const AOI_FULL_RATE_DIST_SQ: float = 1250.0 * 1250.0
+const AOI_FULL_RATE_DIST_SQ: float = 1500.0 * 1500.0
 const SaveStoreScript := preload("res://sim/save_store.gd")
 
 enum Mode { SOLO = 0, CLIENT = 1, SERVER = 2 }
@@ -744,7 +744,7 @@ func save_peer_account(peer_id: int) -> bool:
 			state["world_y"] = snappedf((wp as Vector2).y, 0.1)
 			state["has_saved_pos"] = true
 		state["heading"] = snappedf(float(ship.get("heading")), 0.001)
-		state["hull_tier"] = clampi(int(ship.get("hull_tier")), Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+		state["hull_tier"] = clampi(int(ship.get("hull_tier")), Contracts.ShipClass.SLOOP, 8)
 		var max_hp: float = maxf(10.0, float(ship.get("max_hp")))
 		if bool(ship.get("is_sunk")) or float(ship.get("hp")) <= 0.0:
 			state["hp"] = max_hp
@@ -920,7 +920,7 @@ func rpc_request_bounty_spawn(target_pos: Vector2, boss_name: String, hull_tier:
 	if current_mode != Mode.SERVER or ai_director_ref == null:
 		return
 	var clean_name: String = boss_name.strip_edges().left(32)
-	var clamped_tier: int = clampi(hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	var clamped_tier: int = clampi(hull_tier, Contracts.ShipClass.SLOOP, 8)
 	var spawned_id: int = ai_director_ref.spawn_ai_ship(Contracts.ShipFaction.PIRATE, target_pos, true, clean_name, clamped_tier, false)
 	if spawned_id > 0:
 		rpc_id(multiplayer.get_remote_sender_id(), "rpc_client_bounty_spawned", quest_id, spawned_id)
@@ -969,7 +969,7 @@ func rpc_upgrade_ship_class(new_hull_tier: int) -> void:
 		return
 	var ship: Node = all_ships_ref.get(multiplayer.get_remote_sender_id(), null)
 	if ship != null and ship.has_method("upgrade_ship_class"):
-		ship.call("upgrade_ship_class", clampi(new_hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON))
+		ship.call("upgrade_ship_class", clampi(new_hull_tier, Contracts.ShipClass.SLOOP, 8))
 
 
 @rpc("any_peer", "reliable")

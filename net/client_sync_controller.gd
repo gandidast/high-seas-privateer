@@ -278,7 +278,7 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 			_sync_remote_ship(sid, ship, rend, sd, is_new_ship, _latest_srv_time)
 
 		if sd.has("hull_tier") and rend != null and is_instance_valid(rend) and rend.has_method("set_hull_tier"):
-			rend.call("set_hull_tier", clampi(int(sd["hull_tier"]), 0, 5))
+			rend.call("set_hull_tier", clampi(int(sd["hull_tier"]), 0, 8))
 		var now_sunk: bool = bool(ship.get("is_sunk"))
 		if (is_new_ship or sd.has("is_sunk") or now_sunk != prev_sunk) and rend != null and is_instance_valid(rend) and rend.has_method("set_sunk"):
 			rend.call("set_sunk", now_sunk)
@@ -551,7 +551,7 @@ func _sync_remote_ship(sid: int, ship: Node, rend: Node2D, sd: Dictionary, is_ne
 func _apply_authoritative_non_kinematic(ship: Node, sd: Dictionary) -> void:
 	ship.set("faction", int(sd.get("faction", ship.get("faction"))))
 	ship.set("ship_name", str(sd.get("ship_name", ship.get("ship_name"))))
-	var new_tier: int = clampi(int(sd.get("hull_tier", ship.get("hull_tier"))), 0, 5)
+	var new_tier: int = clampi(int(sd.get("hull_tier", ship.get("hull_tier"))), 0, 8)
 	if new_tier != int(ship.get("hull_tier")):
 		ship.set("hull_tier", new_tier)
 		if ship.has_method("_sync_hull_radius_for_tier"):
@@ -606,7 +606,7 @@ func _on_ship_spawned(sid: int, ship_data: Dictionary) -> void:
 	if ship_data.has("hull_tier") and ship_renderers_ref.has(sid):
 		var r: Node2D = ship_renderers_ref[sid]
 		if r != null and r.has_method("set_hull_tier"):
-			r.call("set_hull_tier", clampi(int(ship_data["hull_tier"]), 0, 5))
+			r.call("set_hull_tier", clampi(int(ship_data["hull_tier"]), 0, 8))
 
 
 func _on_ship_despawned(sid: int) -> void:

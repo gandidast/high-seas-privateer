@@ -93,8 +93,8 @@ func _boot_headless_server() -> void:
 	var port: int = NetworkManager.get_cli_port(Contracts.SERVER_DEFAULT_PORT)
 	world_seed = NetworkManager.get_cli_seed(Contracts.DEFAULT_WORLD_SEED)
 	_init_simulation(world_seed, true)
-	ai_director.populate_initial_fleet(3, 3)
-	loot_system.spawn_initial_flotsam(world_map, 3)
+	ai_director.populate_initial_fleet(5, 6)
+	loot_system.spawn_initial_flotsam(world_map, 20)
 
 	network_manager.bind_simulation(world_map, combat_system, loot_system, ai_director, all_ships)
 	network_manager.peer_ship_joined.connect(_on_server_peer_joined)
@@ -153,7 +153,7 @@ func _on_server_peer_joined_with_save(peer_id: int, captain_name: String, save_d
 		]
 	ship.call("apply_stats", applied_stats)
 	if save_data.has("hull_tier") and int(ship.get("hull_tier")) != int(save_data["hull_tier"]):
-		ship.call("upgrade_ship_class", clampi(int(save_data["hull_tier"]), Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON))
+		ship.call("upgrade_ship_class", clampi(int(save_data["hull_tier"]), Contracts.ShipClass.SLOOP, 8))
 	if has_saved_pos and float(save_data.get("hp", -1.0)) > 0.0:
 		ship.set("hp", clampf(float(save_data["hp"]), 1.0, float(ship.get("max_hp"))))
 
@@ -294,8 +294,8 @@ func _on_solo_pressed(continue_save: bool = true) -> void:
 
 	player_ship_id = 1
 	_spawn_local_player(player_ship_id, cap_title, true, loaded_save)
-	ai_director.populate_initial_fleet(3, 3)
-	loot_system.spawn_initial_flotsam(world_map, 3)
+	ai_director.populate_initial_fleet(5, 6)
+	loot_system.spawn_initial_flotsam(world_map, 20)
 	_init_ui_layers(loaded_save)
 	_bind_save_dirty_signals()
 	_solo_autosave_accum = 0.0
@@ -433,7 +433,7 @@ func _spawn_local_player(p_ship_id: int, p_name: String, register_combat: bool, 
 			player_grid.call("from_dict", saved_grid)
 		else:
 			if save_data.has("hull_tier"):
-				player_grid.call("set_hull_tier", clampi(int(save_data["hull_tier"]), Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON))
+				player_grid.call("set_hull_tier", clampi(int(save_data["hull_tier"]), Contracts.ShipClass.SLOOP, 8))
 			player_grid.call("populate_starter_loadout")
 		var stats: Contracts.ShipStats = player_grid.call("compile_stats")
 		player_ship.call("apply_stats", stats)
