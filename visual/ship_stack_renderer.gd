@@ -174,6 +174,10 @@ func set_sunk(sunk: bool) -> void:
 	queue_redraw()
 
 
+func _hull_layer_scale() -> float:
+	return 1.18 if hull_tier == Contracts.ShipClass.MAN_O_WAR else LAYER_SCALE
+
+
 func _rebuild_layer_stack() -> void:
 	for spr in _layer_sprites:
 		if is_instance_valid(spr):
@@ -181,6 +185,7 @@ func _rebuild_layer_stack() -> void:
 	_layer_sprites.clear()
 
 	_sail_layer_range = ProceduralShipBaker.get_sail_layer_range(LAYER_COUNT)
+	var base_scale: float = _hull_layer_scale()
 	var textures: Array[ImageTexture] = ProceduralShipBaker.bake_ship_layers(faction, LAYER_COUNT, hull_tier)
 	for i in range(textures.size()):
 		var spr := Sprite2D.new()
@@ -188,11 +193,14 @@ func _rebuild_layer_stack() -> void:
 		spr.texture = textures[i]
 		spr.centered = true
 		spr.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-		spr.scale = Vector2(LAYER_SCALE, LAYER_SCALE)
+		spr.scale = Vector2(base_scale, base_scale)
 		spr.z_index = i
-		spr.position = Vector2(0.0, float(i) * LAYER_Y_STEP).round()
+		spr.position = Vector2(0.0, float(i) * LAYER_Y_STEP * base_scale).round()
 		_stack_root.add_child(spr)
 		_layer_sprites.append(spr)
+
+	if _name_label != null:
+		_name_label.position = Vector2(-58.0, -42.0 if hull_tier == Contracts.ShipClass.MAN_O_WAR else -37.0)
 
 	_last_applied_sail_state = -1
 	_last_applied_flash = false
@@ -258,8 +266,8 @@ func update_equipped_modules(equipped_items: Array) -> void:
 	_module_entries.clear()
 
 	var tier_idx: int = clampi(hull_tier, 0, 8)
-	var hull_len_span: float = [11.5, 13.5, 15.0, 18.5, 16.5, 22.0, 18.0, 19.5, 23.5][tier_idx]
-	var rail_y: float = [5.6, 6.2, 7.6, 9.0, 6.0, 11.2, 6.4, 9.8, 12.2][tier_idx]
+	var hull_len_span: float = [11.5, 13.5, 15.0, 18.5, 16.5, 22.0, 18.0, 19.5, 26.5][tier_idx]
+	var rail_y: float = [5.6, 6.2, 7.6, 9.0, 6.0, 11.2, 6.4, 9.8, 14.0][tier_idx]
 	var class_spec: Dictionary = Contracts.get_ship_class_spec(tier_idx)
 	var grid_w: int = maxi(4, int(class_spec.get("grid_cols", 8)))
 	var grid_h: int = maxi(4, int(class_spec.get("grid_rows", 6)))
@@ -362,7 +370,7 @@ func trigger_muzzle_flash(is_starboard: bool) -> void:
 	if _is_sunk or not _is_within_camera_bounds(CULL_MARGIN_PX):
 		return
 	var side_sign: float = 1.0 if is_starboard else -1.0
-	var rail_dist: float = [8.2, 9.0, 10.6, 12.5, 9.0, 15.0, 9.6, 13.5, 16.2][clampi(hull_tier, 0, 8)]
+	var rail_dist: float = [8.2, 9.0, 10.6, 12.5, 9.0, 15.0, 9.6, 13.5, 18.5][clampi(hull_tier, 0, 8)]
 	for offset_x in [-7.0, 2.0, 10.0]:
 		_muzzle_flashes.append({
 			"local_pos": Vector2(offset_x, side_sign * rail_dist),
@@ -378,7 +386,7 @@ func trigger_muzzle_flash(is_starboard: bool) -> void:
 func trigger_bow_muzzle_flash() -> void:
 	if _is_sunk or not _is_within_camera_bounds(CULL_MARGIN_PX):
 		return
-	var bow_x: float = [12.0, 14.0, 15.5, 19.0, 17.5, 22.5, 20.0, 21.0, 24.0][clampi(hull_tier, 0, 8)]
+	var bow_x: float = [12.0, 14.0, 15.5, 19.0, 17.5, 22.5, 20.0, 21.0, 28.0][clampi(hull_tier, 0, 8)]
 	_muzzle_flashes.append({
 		"local_pos": Vector2(bow_x, 0.0),
 		"side_sign": 0.0,
@@ -509,9 +517,12 @@ func _apply_stack_transforms(bob_y: float, force_all: bool = false) -> void:
 	_last_applied_roll_q = roll_q
 
 	var perp := Vector2(-sin(r_hdg), cos(r_hdg))
+	var base_scale: float = _hull_layer_scale()
 	var sail_scale_x: float = 1.0
 	if _is_sunk:
-		sail_scale_x = 0.28
+		sail_scale_x = 1.0 if hull_tier == Contracts.ShipClass.IRONCLAD else 0.28
+	elif hull_tier == Contracts.ShipClass.IRONCLAD:
+		sail_scale_x = 1.0
 	elif _sail_state == Contracts.SailState.ANCHORED:
 		sail_scale_x = 0.48
 	elif _sail_state == Contracts.SailState.HALF_SAIL:
@@ -520,7 +531,7 @@ func _apply_stack_transforms(bob_y: float, force_all: bool = false) -> void:
 		sail_scale_x = 1.06
 
 	var eff_tint: Color = SUNK_TINT if _is_sunk else (FLASH_TINT if is_flashing else Color.WHITE)
-	var eff_y_step: float = LAYER_Y_STEP * (0.65 if _is_sunk else 1.0)
+	var eff_y_step: float = LAYER_Y_STEP * base_scale * (0.65 if _is_sunk else 1.0)
 
 	var total_layers: int = _layer_sprites.size()
 	var denom: float = float(maxi(1, total_layers - 1))
@@ -535,9 +546,9 @@ func _apply_stack_transforms(bob_y: float, force_all: bool = false) -> void:
 			spr.visible = not (_is_sunk and i >= total_layers - 2)
 		if update_sail_scale:
 			if i >= _sail_layer_range.x and i <= _sail_layer_range.y:
-				spr.scale = Vector2(LAYER_SCALE * sail_scale_x, LAYER_SCALE)
+				spr.scale = Vector2(base_scale * sail_scale_x, base_scale)
 			else:
-				spr.scale = Vector2(LAYER_SCALE, LAYER_SCALE)
+				spr.scale = Vector2(base_scale, base_scale)
 
 	var mod_denom: float = float(maxi(1, LAYER_COUNT - 1))
 	for entry in _module_entries:
@@ -563,7 +574,7 @@ func _apply_stack_transforms(bob_y: float, force_all: bool = false) -> void:
 
 
 func _hull_size_factor() -> float:
-	return [0.88, 0.98, 1.10, 1.24, 1.06, 1.48, 1.16, 1.36, 1.58][clampi(hull_tier, 0, 8)]
+	return [0.88, 0.98, 1.10, 1.24, 1.06, 1.48, 1.16, 1.36, 1.68][clampi(hull_tier, 0, 8)]
 
 
 func _update_wake_and_foam(delta: float) -> void:
@@ -710,7 +721,8 @@ func _draw() -> void:
 	if not _is_sunk and (_hp < _max_hp or faction != Contracts.ShipFaction.PLAYER):
 		var bar_w: float = [28.0, 31.0, 34.0, 38.0, 33.0, 46.0, 36.0, 42.0, 50.0][clampi(hull_tier, 0, 8)]
 		var bar_h: float = 3.0
-		var bar_pos := Vector2(-bar_w * 0.5, -24.0).round()
+		var bar_y: float = -28.0 if hull_tier == Contracts.ShipClass.MAN_O_WAR else -24.0
+		var bar_pos := Vector2(-bar_w * 0.5, bar_y).round()
 		var ratio: float = clampf(_hp / _max_hp, 0.0, 1.0)
 		draw_rect(Rect2(bar_pos - Vector2.ONE, Vector2(bar_w + 2.0, bar_h + 2.0)), OUTLINE_COLOR)
 		draw_rect(Rect2(bar_pos, Vector2(bar_w, bar_h)), HP_BG_COL)

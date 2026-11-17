@@ -658,10 +658,34 @@ func _test_visual_pipeline_and_headless_server_boot() -> void:
 	print("[TEST 4/5] 2D Sprite-Stacking (9 Classes), 27 Item Icons (Cursed Sails Rectangular), Ocean 4-Quadrant Coverage & Headless Server Sync...")
 
 	# 1. Verify ProceduralShipBaker generates 24 crisp 64x32 1:1 pixel layers for ALL 9 ship classes + ALL 27 item icons
+	var baked_by_tier: Dictionary = {}
 	for tier in range(9):
 		var layers: Array[ImageTexture] = ProceduralShipBaker.bake_ship_layers(Contracts.ShipFaction.PLAYER, 24, tier)
 		_assert_true(layers.size() == 24, "ProceduralShipBaker must bake 24 layers for hull_tier %d (got %d)" % [tier, layers.size()])
 		_assert_true(layers[0].get_width() == 64 and layers[0].get_height() == 32, "Baked ship layer texture must be 64x32 px")
+		baked_by_tier[tier] = layers
+
+	# Verify Tiers 5, 6, 7, 8 produce genuinely distinct pixel silhouettes on hull/deck, cabin/casemate & sail/smokestack layers
+	var tier_pairs: Array = [[5, 6], [5, 7], [5, 8], [6, 7], [6, 8], [7, 8]]
+	var check_layers: Array[int] = [8, 12, 17, 20] # deck/rails, cabin/casemate, lower sail/stack, upper sail/smoke
+	for pair in tier_pairs:
+		var t_a: int = int(pair[0])
+		var t_b: int = int(pair[1])
+		var layers_a: Array[ImageTexture] = baked_by_tier[t_a]
+		var layers_b: Array[ImageTexture] = baked_by_tier[t_b]
+		for l_idx in check_layers:
+			var bytes_a: PackedByteArray = layers_a[l_idx].get_image().get_data()
+			var bytes_b: PackedByteArray = layers_b[l_idx].get_image().get_data()
+			var diff_pixels: int = 0
+			for p_i in range(0, mini(bytes_a.size(), bytes_b.size()), 4):
+				if (
+					bytes_a[p_i] != bytes_b[p_i]
+					or bytes_a[p_i + 1] != bytes_b[p_i + 1]
+					or bytes_a[p_i + 2] != bytes_b[p_i + 2]
+					or bytes_a[p_i + 3] != bytes_b[p_i + 3]
+				):
+					diff_pixels += 1
+			_assert_true(diff_pixels >= 12, "Ship tiers %d vs %d must differ visually on layer %d (diff_pixels=%d)" % [t_a, t_b, l_idx, diff_pixels])
 
 	var kraken_tex: ImageTexture = ProceduralShipBaker.bake_kraken_body_texture(false)
 	_assert_true(kraken_tex != null and kraken_tex.get_width() == 64 and kraken_tex.get_height() == 64, "Kraken body texture must be 64x64")
@@ -706,13 +730,22 @@ func _test_visual_pipeline_and_headless_server_boot() -> void:
 	_assert_true(ocean._harbor_buoy_markers.size() == 5, "OceanRenderer must only create buoy rings for the 5 safe harbors (got %d)" % ocean._harbor_buoy_markers.size())
 	ocean.queue_free()
 
-	# 3. Verify ShipStackRenderer 24-layer stacking across tiers 0..8, BOW socket & sunk state
+	# 3. Verify ShipStackRenderer 24-layer stacking across tiers 0..8, Ironclad un-squashed stack, Man-o'-War 1.18x scale, BOW socket & sunk state
 	var renderer := ShipStackRenderer.new()
 	root.add_child(renderer)
 	renderer.setup_ship(1, Contracts.ShipFaction.PLAYER, "Morgenstern")
 	for tier in range(9):
 		renderer.set_hull_tier(tier)
 		_assert_true(renderer.hull_tier == tier and renderer._layer_sprites.size() == 24, "ShipStackRenderer must maintain 24 layers for tier %d" % tier)
+	renderer.set_hull_tier(Contracts.ShipClass.IRONCLAD)
+	renderer.update_transform_state(Vector2.ZERO, 0.0, 0.0, Contracts.SailState.ANCHORED, 500.0, 500.0)
+	renderer._apply_stack_transforms(0.0, true)
+	var iron_sail_spr: Sprite2D = renderer._layer_sprites[renderer._sail_layer_range.x]
+	_assert_true(is_equal_approx(iron_sail_spr.scale.x, 1.0), "IRONCLAD anchored must keep sail_scale_x = 1.0 (no flat smokestack squash, got %.2f)" % iron_sail_spr.scale.x)
+	renderer.set_hull_tier(Contracts.ShipClass.MAN_O_WAR)
+	renderer.update_transform_state(Vector2.ZERO, 0.0, 0.0, Contracts.SailState.FULL_SAIL, 1040.0, 1040.0)
+	renderer._apply_stack_transforms(0.0, true)
+	_assert_true(is_equal_approx(renderer._layer_sprites[0].scale.x, 1.18), "MAN_O_WAR hull layers must scale at 1.18x (got %.2f)" % renderer._layer_sprites[0].scale.x)
 	renderer.update_transform_state(Vector2(100.0, 50.0), 0.75, 60.0, Contracts.SailState.FULL_SAIL, 280.0, 280.0)
 	renderer.update_equipped_modules([
 		{ "category": Contracts.ItemCategory.CANNON, "slot_type": Contracts.SlotType.DECK_PORT, "grid_x": 2, "grid_y": 0, "rarity": 1, "affix": 0 },

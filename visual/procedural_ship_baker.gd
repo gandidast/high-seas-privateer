@@ -35,7 +35,7 @@ static func get_sail_layer_range(layer_count: int = 24) -> Vector2i:
 
 static func bake_ship_layers(faction: int = 0, layer_count: int = 20, hull_tier: int = 0) -> Array[ImageTexture]:
 	var safe_layers: int = maxi(12, layer_count)
-	var safe_tier: int = clampi(hull_tier, 0, 5)
+	var safe_tier: int = clampi(hull_tier, 0, 8)
 	var safe_faction: int = ShipHullBaker.normalize_faction(faction)
 	var cache_key: String = "%d_%d_%d" % [safe_faction, safe_layers, safe_tier]
 	if _ship_layer_cache.has(cache_key):
