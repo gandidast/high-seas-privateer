@@ -1,7 +1,7 @@
 class_name CargoSlotRenderer
 extends RefCounted
 ## Modular renderer for CargoGridUI: draws the dynamic top-down ship blueprint
-## & Dredge grid (6x4 .. 10x7, including Bow slot), Beute-Lager stash cards,
+## & Dredge grid (6x4 .. 12x7, including Bow slot), Beute-Lager stash cards,
 ## Schiffswerte stats bars, dragging ghost, and item tooltips.
 
 const PANEL_SIZE: Vector2 = Vector2(1040.0, 580.0)
@@ -52,11 +52,8 @@ static func get_grid_dims(dredge_grid: DredgeGrid) -> Vector2i:
 
 static func compute_grid_layout(dredge_grid: DredgeGrid) -> Dictionary:
 	var dims: Vector2i = get_grid_dims(dredge_grid)
-	var cell_sz: float = 48.0
-	if dims.x >= 10 or dims.y >= 7:
-		cell_sz = 42.0
-	elif dims.x >= 9:
-		cell_sz = 44.0
+	var max_fit: float = floorf(minf(420.0 / float(maxi(1, dims.x)), 310.0 / float(maxi(1, dims.y))))
+	var cell_sz: float = clampf(max_fit, 28.0, 48.0)
 	var grid_px := Vector2(float(dims.x) * cell_sz, float(dims.y) * cell_sz)
 	var region_center := Vector2(256.0, 244.0)
 	var origin: Vector2 = (region_center - grid_px * 0.5).round()
@@ -204,7 +201,8 @@ func draw_ship_blueprint_and_grid(
 			var cell_rect := Rect2(grid_origin + Vector2(float(gx) * cell_sz, float(gy) * cell_sz), Vector2(cell_sz, cell_sz))
 			UIThemeHelper.draw_clean_box(canvas, cell_rect, _slot_fill_color(slot_type), _slot_border_color(slot_type))
 			if slot_type == Contracts.SlotType.BOW:
-				UIThemeHelper.draw_sharp_text(canvas, font, cell_rect.position + Vector2(0.0, cell_sz * 0.62), "BUG", 12, Color(0.98, 0.80, 0.34, 0.72), HORIZONTAL_ALIGNMENT_CENTER, int(cell_sz), 1)
+				var bow_font_sz: int = 11 if cell_sz < 40.0 else 12
+				UIThemeHelper.draw_sharp_text(canvas, font, cell_rect.position + Vector2(0.0, cell_sz * 0.62), "BUG", bow_font_sz, Color(0.98, 0.80, 0.34, 0.72), HORIZONTAL_ALIGNMENT_CENTER, int(cell_sz), 1)
 			elif slot_type == Contracts.SlotType.MAST:
 				mast_sum += cell_rect.get_center()
 				mast_count += 1

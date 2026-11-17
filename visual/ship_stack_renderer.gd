@@ -1,7 +1,8 @@
 class_name ShipStackRenderer
 extends Node2D
 ## Renders a ship in crisp 2D pixel-art diorama style using 24 tightly stacked Sprite2D layers,
-## 6 distinct ship classes (Sloop / Schooner / Brigantine / Frigate / Corsair Clipper / War Galleon),
+## 9 distinct ship classes (Sloop / Schooner / Brigantine / Frigate / Corsair Clipper / War Galleon /
+## Corsair Xebec / Ironclad / Man-o'-War),
 ## waterline foam, bow wave, stern wake trail, sunken wreck state, and 360-degree rotating deck modules.
 
 const LAYER_COUNT: int = 24
@@ -137,7 +138,7 @@ func setup_ship(p_ship_id: int, p_faction: int, p_name: String = "", p_hull_tier
 	ship_id = p_ship_id
 	faction = p_faction
 	ship_name = p_name
-	hull_tier = clampi(p_hull_tier, 0, 5)
+	hull_tier = clampi(p_hull_tier, 0, 8)
 	_is_sunk = false
 	_last_applied_sunk = false
 	_bob_phase = float(p_ship_id % 97) * 0.73
@@ -146,7 +147,7 @@ func setup_ship(p_ship_id: int, p_faction: int, p_name: String = "", p_hull_tier
 
 
 func set_hull_tier(tier: int) -> void:
-	var clamped: int = clampi(tier, 0, 5)
+	var clamped: int = clampi(tier, 0, 8)
 	if clamped == hull_tier and not _layer_sprites.is_empty():
 		return
 	hull_tier = clamped
@@ -256,9 +257,9 @@ func update_equipped_modules(equipped_items: Array) -> void:
 			spr.queue_free()
 	_module_entries.clear()
 
-	var tier_idx: int = clampi(hull_tier, 0, 5)
-	var hull_len_span: float = [11.5, 13.5, 15.0, 18.5, 16.5, 22.0][tier_idx]
-	var rail_y: float = [5.6, 6.2, 7.6, 9.0, 6.0, 11.2][tier_idx]
+	var tier_idx: int = clampi(hull_tier, 0, 8)
+	var hull_len_span: float = [11.5, 13.5, 15.0, 18.5, 16.5, 22.0, 18.0, 19.5, 23.5][tier_idx]
+	var rail_y: float = [5.6, 6.2, 7.6, 9.0, 6.0, 11.2, 6.4, 9.8, 12.2][tier_idx]
 	var class_spec: Dictionary = Contracts.get_ship_class_spec(tier_idx)
 	var grid_w: int = maxi(4, int(class_spec.get("grid_cols", 8)))
 	var grid_h: int = maxi(4, int(class_spec.get("grid_rows", 6)))
@@ -361,7 +362,7 @@ func trigger_muzzle_flash(is_starboard: bool) -> void:
 	if _is_sunk or not _is_within_camera_bounds(CULL_MARGIN_PX):
 		return
 	var side_sign: float = 1.0 if is_starboard else -1.0
-	var rail_dist: float = [8.2, 9.0, 10.6, 12.5, 9.0, 15.0][clampi(hull_tier, 0, 5)]
+	var rail_dist: float = [8.2, 9.0, 10.6, 12.5, 9.0, 15.0, 9.6, 13.5, 16.2][clampi(hull_tier, 0, 8)]
 	for offset_x in [-7.0, 2.0, 10.0]:
 		_muzzle_flashes.append({
 			"local_pos": Vector2(offset_x, side_sign * rail_dist),
@@ -377,7 +378,7 @@ func trigger_muzzle_flash(is_starboard: bool) -> void:
 func trigger_bow_muzzle_flash() -> void:
 	if _is_sunk or not _is_within_camera_bounds(CULL_MARGIN_PX):
 		return
-	var bow_x: float = [12.0, 14.0, 15.5, 19.0, 17.5, 22.5][clampi(hull_tier, 0, 5)]
+	var bow_x: float = [12.0, 14.0, 15.5, 19.0, 17.5, 22.5, 20.0, 21.0, 24.0][clampi(hull_tier, 0, 8)]
 	_muzzle_flashes.append({
 		"local_pos": Vector2(bow_x, 0.0),
 		"side_sign": 0.0,
@@ -562,7 +563,7 @@ func _apply_stack_transforms(bob_y: float, force_all: bool = false) -> void:
 
 
 func _hull_size_factor() -> float:
-	return [0.88, 0.98, 1.10, 1.24, 1.06, 1.48][clampi(hull_tier, 0, 5)]
+	return [0.88, 0.98, 1.10, 1.24, 1.06, 1.48, 1.16, 1.36, 1.58][clampi(hull_tier, 0, 8)]
 
 
 func _update_wake_and_foam(delta: float) -> void:
@@ -707,7 +708,7 @@ func _draw() -> void:
 
 	# 5. Crisp pixel HP bar above ship when damaged or enemy/NPC (hidden when sunk)
 	if not _is_sunk and (_hp < _max_hp or faction != Contracts.ShipFaction.PLAYER):
-		var bar_w: float = [28.0, 31.0, 34.0, 38.0, 33.0, 46.0][clampi(hull_tier, 0, 5)]
+		var bar_w: float = [28.0, 31.0, 34.0, 38.0, 33.0, 46.0, 36.0, 42.0, 50.0][clampi(hull_tier, 0, 8)]
 		var bar_h: float = 3.0
 		var bar_pos := Vector2(-bar_w * 0.5, -24.0).round()
 		var ratio: float = clampf(_hp / _max_hp, 0.0, 1.0)

@@ -1,6 +1,6 @@
 class_name HarborUI
 extends Control
-## Safe Harbor UI for ship repair, 6-Class Shipyard Roster (unlock & free switch),
+## Safe Harbor UI for ship repair, 9-Class Shipyard Roster (unlock & free switch),
 ## rotating Armory equipment shop (auto-refreshes on new port / cooldown),
 ## selling loot/cargo with affix bonuses, and 3-slot Harbor Quests.
 
@@ -137,8 +137,9 @@ func setup(
 
 func set_owned_ship_tiers(tiers_arr: Array) -> void:
 	owned_ship_tiers = { Contracts.ShipClass.SLOOP: true, _get_player_hull_tier(): true }
+	var max_tier: int = maxi(8, Contracts.SHIP_CLASS_SPECS.size() - 1)
 	for t_var in tiers_arr:
-		var t_val: int = clampi(int(t_var), Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+		var t_val: int = clampi(int(t_var), 0, max_tier)
 		owned_ship_tiers[t_val] = true
 	if visible:
 		_refresh_header_and_shipyard()
@@ -362,9 +363,12 @@ func _build_shipyard_card(left_col: VBoxContainer) -> void:
 	yard_vbox.add_theme_constant_override("separation", 8)
 	yard_panel.add_child(yard_vbox)
 
+	var spec_keys: Array = Contracts.SHIP_CLASS_SPECS.keys()
+	spec_keys.sort()
+
 	var yard_top := HBoxContainer.new()
 	yard_vbox.add_child(yard_top)
-	var yard_title := UIThemeHelper.make_label("WERFT & FLOTTEN-ROSTER (6 KLASSEN)", 17, UIThemeHelper.COL_GOLD)
+	var yard_title := UIThemeHelper.make_label("WERFT & FLOTTEN-ROSTER (%d KLASSEN)" % spec_keys.size(), 17, UIThemeHelper.COL_GOLD)
 	yard_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	yard_top.add_child(yard_title)
 	_class_label = UIThemeHelper.make_label("Schaluppe (6x4)", 15, UIThemeHelper.COL_TURQUOISE)
@@ -396,37 +400,50 @@ func _build_shipyard_card(left_col: VBoxContainer) -> void:
 	rep_row.add_child(_repair_btn)
 
 	var class_grid := GridContainer.new()
-	class_grid.columns = 2
-	class_grid.add_theme_constant_override("h_separation", 8)
-	class_grid.add_theme_constant_override("v_separation", 6)
+	class_grid.columns = 3
+	class_grid.add_theme_constant_override("h_separation", 6)
+	class_grid.add_theme_constant_override("v_separation", 5)
 	yard_vbox.add_child(class_grid)
 
 	var tier_colors: Dictionary = {
-		Contracts.ShipClass.SLOOP: Color(0.20, 0.28, 0.36),
-		Contracts.ShipClass.SCHOONER: Color(0.18, 0.34, 0.38),
-		Contracts.ShipClass.BRIGANTINE: Color(0.20, 0.30, 0.44),
-		Contracts.ShipClass.FRIGATE: Color(0.30, 0.22, 0.42),
-		Contracts.ShipClass.CORSAIR_CLIPPER: Color(0.42, 0.24, 0.18),
-		Contracts.ShipClass.WAR_GALLEON: Color(0.38, 0.28, 0.14)
+		0: Color(0.20, 0.28, 0.36),
+		1: Color(0.18, 0.34, 0.38),
+		2: Color(0.20, 0.30, 0.44),
+		3: Color(0.30, 0.22, 0.42),
+		4: Color(0.42, 0.24, 0.18),
+		5: Color(0.38, 0.28, 0.14),
+		6: Color(0.44, 0.20, 0.28),
+		7: Color(0.24, 0.28, 0.34),
+		8: Color(0.42, 0.30, 0.12)
 	}
 	var tier_notes: Dictionary = {
-		Contracts.ShipClass.SLOOP: "Starter",
-		Contracts.ShipClass.CORSAIR_CLIPPER: "Schnellster Jäger (+15% Reload)",
-		Contracts.ShipClass.WAR_GALLEON: "Schweres Schlachtschiff"
+		0: "Starter",
+		4: "Schnellster Jäger (+15% Reload)",
+		5: "Schweres Schlachtschiff",
+		6: "2 Bug-Slots & Rammsporn",
+		7: "Eisenpanzer & Rammbug",
+		8: "3-Deck Flaggschiff"
 	}
 
 	_class_btns.clear()
-	for tier in range(6):
+	for tier_var in spec_keys:
+		var tier: int = int(tier_var)
 		var spec: Dictionary = Contracts.get_ship_class_spec(tier)
 		var cname: String = str(spec.get("name", "Schiff"))
 		var cols: int = int(spec.get("grid_cols", 6))
 		var rows: int = int(spec.get("grid_rows", 4))
 		var cost: int = int(spec.get("cost", 0))
 		var note: String = str(tier_notes.get(tier, ""))
+		var bg_col: Color = tier_colors.get(tier, Color(0.22, 0.28, 0.38))
 
-		var btn := UIThemeHelper.make_button("%s (%dx%d)" % [cname, cols, rows], tier_colors.get(tier, Color(0.22, 0.28, 0.38)), 14)
+		var btn := UIThemeHelper.make_button("%s\n(%dx%d)" % [cname, cols, rows], bg_col, 14)
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		btn.custom_minimum_size = Vector2(0.0, 32.0)
+		btn.custom_minimum_size = Vector2(0.0, 42.0)
+		btn.clip_text = true
+		btn.add_theme_stylebox_override("normal", UIThemeHelper.make_box_style(bg_col, UIThemeHelper.COL_BRASS, 4, 1, 4))
+		btn.add_theme_stylebox_override("hover", UIThemeHelper.make_box_style(bg_col.lightened(0.14), UIThemeHelper.COL_GOLD, 4, 1, 4))
+		btn.add_theme_stylebox_override("pressed", UIThemeHelper.make_box_style(bg_col.darkened(0.18), UIThemeHelper.COL_GOLD, 4, 1, 4))
+		btn.add_theme_stylebox_override("disabled", UIThemeHelper.make_box_style(Color(0.14, 0.13, 0.16, 0.90), Color(0.32, 0.29, 0.28, 0.80), 4, 1, 4))
 		var tip := "Tier %d • %dx%d Grid • %.0f HP • %.0f kn • %.1f Rüstung • %.0f kg" % [
 			tier, cols, rows,
 			float(spec.get("base_hp", 120.0)),
@@ -588,7 +605,10 @@ func _refresh_header_and_shipyard() -> void:
 	if _title_label == null:
 		return
 	var island_name: String = "Unbekannter Hafen"
-	if current_island_index >= 0 and current_island_index < Contracts.ISLAND_NAMES.size():
+	var islands: Array = _get_islands()
+	if current_island_index >= 0 and current_island_index < islands.size() and islands[current_island_index] != null:
+		island_name = str(islands[current_island_index].name)
+	elif current_island_index >= 0 and current_island_index < Contracts.ISLAND_NAMES.size():
 		island_name = Contracts.ISLAND_NAMES[current_island_index]
 	_title_label.text = "HAFEN: %s" % island_name.to_upper()
 	_gold_label.text = "%d Gold" % current_gold
@@ -609,13 +629,13 @@ func _refresh_header_and_shipyard() -> void:
 		var cost: int = int(spec.get("cost", 0))
 		var is_owned: bool = bool(owned_ship_tiers.get(tier, cost <= 0))
 		if tier == current_tier:
-			btn.text = "★ %s (%dx%d)" % [cname, cols, rows]
+			btn.text = "★ %s\n(%dx%d) Aktiv" % [cname, cols, rows]
 			btn.disabled = true
 		elif is_owned:
-			btn.text = "%s (%dx%d) • Wählen" % [cname, cols, rows]
+			btn.text = "%s\n(%dx%d) • Wählen" % [cname, cols, rows]
 			btn.disabled = false
 		else:
-			btn.text = "%s (%dx%d) • %d G" % [cname, cols, rows, cost]
+			btn.text = "%s\n(%dx%d) • %d G" % [cname, cols, rows, cost]
 			btn.disabled = current_gold < cost
 
 	if player_ship != null:
