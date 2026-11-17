@@ -13,8 +13,10 @@ const FX_MANAGER_PATH: String = "res://visual/fx_manager.gd"
 const CARGO_GRID_UI_PATH: String = "res://ui/cargo_grid_ui.gd"
 const ServerConfigScript := preload("res://net/server_config.gd")
 const SaveStoreScript := preload("res://sim/save_store.gd")
+const CreativeDebugUIScript := preload("res://ui/creative_debug_ui.gd")
 
 var is_headless_server: bool = false
+var is_creative_mode: bool = false
 var game_started: bool = false
 var world_seed: int = Contracts.DEFAULT_WORLD_SEED
 
@@ -42,6 +44,7 @@ var ui_layer: CanvasLayer = null
 var hud_overlay: HudOverlay = null
 var harbor_ui: HarborUI = null
 var cargo_grid_ui: Control = null
+var creative_debug_ui: CreativeDebugUIScript = null
 
 var _start_screen: StartMenuUI = null
 var _client_sync: ClientSyncController = ClientSyncController.new()
@@ -224,6 +227,7 @@ func _boot_client_or_solo_menu() -> void:
 	_start_screen = StartMenuUI.new()
 	_start_screen.solo_requested.connect(func(_cap: String, _url: String): _on_solo_pressed(true))
 	_start_screen.solo_new_requested.connect(func(_cap: String, _url: String): _on_solo_pressed(false))
+	_start_screen.creative_requested.connect(_on_creative_pressed)
 	_start_screen.join_multiplayer_requested.connect(func(url: String, cap_name: String):
 		_client_welcome_handled = false
 		network_manager.connect_or_autostart(url, cap_name))
@@ -255,6 +259,10 @@ func _spawn_world_node(script_path: String, node_name: String) -> Node2D:
 
 
 func _on_solo_pressed(continue_save: bool = true) -> void:
+	is_creative_mode = false
+	if creative_debug_ui != null:
+		creative_debug_ui.set_panel_open(false)
+		creative_debug_ui.visible = false
 	if _start_screen != null:
 		_start_screen.hide_menu()
 	if network_manager == null:
@@ -308,6 +316,66 @@ func _on_solo_pressed(continue_save: bool = true) -> void:
 			_bus().notification_posted.emit("Solo-Spielstand geladen (%d Gold)!" % int(loaded_save.get("gold", 120)), "system")
 
 
+func _on_creative_pressed() -> void:
+	is_creative_mode = true
+	if _start_screen != null:
+		_start_screen.hide_menu()
+	if network_manager == null:
+		network_manager = NetworkManager.new()
+		network_manager.name = "NetworkManager"
+		add_child(network_manager)
+	if _ship_physics_script == null:
+		_ship_physics_script = load(SHIP_PHYSICS_PATH) as Script
+	network_manager.start_solo()
+
+	_active_local_account_key = ""
+	_clear_game_world()
+	world_seed = Contracts.DEFAULT_WORLD_SEED
+	_init_simulation(world_seed, true)
+	if ocean_renderer != null:
+		ocean_renderer.call("setup", world_seed)
+
+	player_ship_id = 1
+	_spawn_local_player(player_ship_id, "Test-Kapitän", true, {})
+	ai_director.populate_initial_fleet(5, 6)
+	loot_system.spawn_initial_flotsam(world_map, 20)
+	var all_tiers: Array = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+	_init_ui_layers({ "gold": 999999, "owned_ship_tiers": all_tiers })
+	if harbor_ui != null:
+		harbor_ui.set_owned_ship_tiers(all_tiers)
+		harbor_ui.set_gold(999999)
+
+	if creative_debug_ui == null:
+		creative_debug_ui = CreativeDebugUIScript.new()
+		ui_layer.add_child(creative_debug_ui)
+	creative_debug_ui.godmode_enabled = false
+	creative_debug_ui.instant_reload_enabled = false
+	creative_debug_ui.visible = true
+	creative_debug_ui.set_panel_open(false)
+	creative_debug_ui.setup(
+		player_ship,
+		player_grid,
+		harbor_ui,
+		hud_overlay,
+		world_map,
+		combat_system,
+		loot_system,
+		ai_director,
+		ship_renderers,
+		pixel_camera,
+		player_ship_id,
+		cargo_grid_ui
+	)
+
+	_bind_save_dirty_signals()
+	_solo_autosave_accum = 0.0
+	_save_dirty = false
+	_save_debounce_timer = -1.0
+	game_started = true
+	if _bus() != null:
+		_bus().notification_posted.emit("Creative / Test-Modus aktiv! [F8] für Test-Arsenal (9 Schiffe & 27 Items).", "system")
+
+
 func _on_reconnect_pressed() -> void:
 	_client_welcome_handled = false
 	if _start_screen != null:
@@ -346,6 +414,10 @@ func _on_network_client_joined(assigned_ship_id: int, server_seed: int) -> void:
 
 
 func _finish_client_join(assigned_ship_id: int, server_seed: int, save_data: Dictionary) -> void:
+	is_creative_mode = false
+	if creative_debug_ui != null:
+		creative_debug_ui.set_panel_open(false)
+		creative_debug_ui.visible = false
 	_clear_game_world()
 	_client_sync.reset()
 	if _start_screen != null:
@@ -538,6 +610,15 @@ func _physics_process(delta: float) -> void:
 		if hud_overlay != null:
 			hud_overlay.set_ships_dict(all_ships)
 
+	if is_creative_mode and creative_debug_ui != null:
+		if creative_debug_ui.godmode_enabled and player_ship != null:
+			player_ship.set("is_sunk", false)
+			player_ship.set("burn_timer", 0.0)
+			player_ship.set("burn_dps", 0.0)
+			player_ship.set("hp", float(player_ship.get("max_hp")))
+		if creative_debug_ui.instant_reload_enabled and combat_system != null:
+			combat_system.step_reloads(10.0)
+
 	_update_ocean_and_aim_cone()
 	_step_local_save_sync(delta)
 
@@ -583,7 +664,7 @@ func _on_local_loot_collected(_drop_id: int, collector_ship_id: int, loot_data: 
 
 
 func _mark_save_dirty() -> void:
-	if is_headless_server or not game_started:
+	if is_headless_server or not game_started or is_creative_mode:
 		return
 	_save_dirty = true
 	if _save_debounce_timer < 0.0:
@@ -591,6 +672,8 @@ func _mark_save_dirty() -> void:
 
 
 func _step_local_save_sync(delta: float) -> void:
+	if is_creative_mode:
+		return
 	if _save_dirty and _save_debounce_timer >= 0.0:
 		_save_debounce_timer -= delta
 		if _save_debounce_timer <= 0.0:
@@ -604,7 +687,7 @@ func _step_local_save_sync(delta: float) -> void:
 
 
 func _flush_local_save(force: bool) -> void:
-	if is_headless_server or not game_started or player_ship == null or network_manager == null:
+	if is_headless_server or not game_started or is_creative_mode or player_ship == null or network_manager == null:
 		return
 	if not force and not _save_dirty:
 		return
@@ -870,7 +953,8 @@ func _combined_ships_dict() -> Dictionary:
 
 func _is_ui_open() -> bool:
 	var map_open: bool = hud_overlay != null and hud_overlay.has_method("is_world_map_open") and bool(hud_overlay.call("is_world_map_open"))
-	return map_open or (cargo_grid_ui != null and cargo_grid_ui.visible) or (harbor_ui != null and harbor_ui.visible)
+	var creative_open: bool = creative_debug_ui != null and creative_debug_ui.is_panel_open()
+	return map_open or (cargo_grid_ui != null and cargo_grid_ui.visible) or (harbor_ui != null and harbor_ui.visible) or creative_open
 
 
 func _clear_game_world() -> void:

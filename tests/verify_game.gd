@@ -943,7 +943,68 @@ func _test_user_auth_and_save_persistence() -> void:
 	_assert_true(not start_ui._auth_form_box.visible and start_ui._logged_in_box.visible, "StartMenuUI must show remembered account after login")
 	start_ui._on_logout_pressed()
 	_assert_true(start_ui._auth_form_box.visible and not start_ui._logged_in_box.visible, "Logout must return StartMenuUI to Username+Password form")
+
+	# 6. Hidden Creative / Test Mode trigger, 9 ship classes, 27 items + affixes, Godmode/Reload & Solo save isolation
+	_assert_true(not start_ui._creative_box.visible, "StartMenuUI hidden creative code box must stay collapsed by default")
+	var creative_emits: Array[int] = [0]
+	start_ui.creative_requested.connect(func(): creative_emits[0] += 1)
+	start_ui.toggle_creative_box()
+	_assert_true(start_ui._creative_box.visible, "toggle_creative_box() must reveal hidden creative code input")
+	start_ui._creative_code_input.text = "wrong"
+	start_ui._submit_creative_code()
+	_assert_true(creative_emits[0] == 0 and start_ui._status_label.text == "Ungültiger Code.", "Invalid creative code must show muted error and not emit creative_requested")
+	start_ui._creative_code_input.text = "  Pirat  "
+	start_ui._submit_creative_code()
+	_assert_true(creative_emits[0] == 1 and not start_ui._creative_box.visible and start_ui._creative_code_input.text.is_empty(), "Valid creative code must clear/hide input and emit creative_requested")
 	start_ui.queue_free()
+
+	var creative_solo_path: String = "user://test_creative_solo_%d.json" % test_id
+	var isolated_store = save_store_script.new(test_dir, creative_solo_path)
+	var baseline_solo: Dictionary = save_store_script.create_default_save_data()
+	baseline_solo["gold"] = 555
+	_assert_true(isolated_store.save_solo(baseline_solo), "Baseline solo save for creative isolation test must write cleanly")
+
+	var main_scene_c: PackedScene = load("res://main.tscn") as PackedScene
+	var main_c: Main = main_scene_c.instantiate() as Main
+	root.add_child(main_c)
+	main_c._save_store = isolated_store
+	main_c._on_creative_pressed()
+	_assert_true(main_c.is_creative_mode and main_c.game_started, "Main._on_creative_pressed() must activate Creative Mode")
+	_assert_true(main_c.harbor_ui != null and main_c.harbor_ui.current_gold == 999999, "Creative Mode must grant 999999 Gold")
+	_assert_true(main_c.harbor_ui.get_owned_ship_tiers_array().size() == 9, "Creative Mode must unlock all 9 ship tiers (0..8)")
+	var c_ui = main_c.creative_debug_ui
+	_assert_true(c_ui != null and not bool(c_ui.call("is_panel_open")), "Creative Mode must initialize CreativeDebugUI collapsed by default")
+	c_ui.call("set_panel_open", true)
+	_assert_true(main_c._is_ui_open(), "Main._is_ui_open() must return true when CreativeDebugUI panel is open")
+	for tier_c in range(9):
+		c_ui.call("switch_ship_class", tier_c)
+		_assert_true(int(main_c.player_ship.get("hull_tier")) == tier_c and int(main_c.player_grid.get("hull_tier")) == tier_c, "Creative switch_ship_class(%d) must switch ship and grid tier" % tier_c)
+	c_ui.call("clear_player_grid")
+	_assert_true((main_c.player_grid.get("placed_items") as Array).is_empty(), "Creative clear_player_grid() must empty placed items")
+	_assert_true(bool(c_ui.call("spawn_item_by_id", "carronade_2x1", Contracts.ItemAffix.CURSED)), "Creative spawn_item_by_id must auto-place CURSED carronade into Man-o'-War grid")
+	_assert_true(bool(c_ui.call("spawn_item_by_id", "storm_sails_2x2", Contracts.ItemAffix.CURSED)), "Creative spawn_item_by_id must auto-place CURSED storm_sails_2x2 into MAST slots")
+	var stash_before_all: int = (main_c.player_grid.get("stash_items") as Array).size()
+	var added_all_cnt: int = int(c_ui.call("add_all_items_to_stash", Contracts.ItemAffix.MASTERWORK))
+	_assert_true(added_all_cnt == 27 and (main_c.player_grid.get("stash_items") as Array).size() == stash_before_all + 27, "Creative add_all_items_to_stash must add all 27 MASTERWORK items")
+	c_ui.set("godmode_enabled", true)
+	c_ui.set("instant_reload_enabled", true)
+	main_c.player_ship.set("hp", 1.0)
+	main_c.player_ship.set("is_sunk", true)
+	main_c.player_ship.set("burn_timer", 4.0)
+	main_c.combat_system.fire_broadside(main_c.player_ship_id, false)
+	main_c._physics_process(0.05)
+	_assert_true(not bool(main_c.player_ship.get("is_sunk")) and is_equal_approx(float(main_c.player_ship.get("hp")), float(main_c.player_ship.get("max_hp"))) and float(main_c.player_ship.get("burn_timer")) == 0.0, "Creative Godmode must keep player alive at full HP with zero burn")
+	_assert_true(float(main_c.combat_system.get_broadside_cone(main_c.player_ship_id, false).get("ready_ratio", 0.0)) >= 0.99, "Creative Instant Reload must keep broadside ready")
+	main_c._mark_save_dirty()
+	main_c._step_local_save_sync(12.0)
+	main_c._flush_local_save(true)
+	var after_creative_solo: Dictionary = isolated_store.load_solo()
+	_assert_true(int(after_creative_solo.get("gold", 0)) == 555, "Creative Mode must NOT modify normal solo save (expected 555 gold, got %d)" % int(after_creative_solo.get("gold", 0)))
+	c_ui.call("set_panel_open", false)
+	main_c._clear_game_world()
+	main_c.queue_free()
+	isolated_store.clear_solo_save()
+
 	if not prev_user.is_empty() and not prev_tok.is_empty() and not prev_srv.is_empty():
 		srv_cfg.call("save_mp_auth", prev_user, prev_tok, prev_srv)
 	else:

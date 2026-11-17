@@ -8,6 +8,7 @@ signal solo_new_requested(captain_name: String, server_url: String)
 signal join_multiplayer_requested(url: String, captain_name: String)
 signal join_multiplayer_auth_requested(url: String, username: String, secret: String, auth_mode: String)
 signal reconnect_requested()
+signal creative_requested()
 
 const ServerConfigScript := preload("res://net/server_config.gd")
 const SaveStoreScript := preload("res://sim/save_store.gd")
@@ -40,6 +41,9 @@ var _join_saved_btn: Button = null
 var _status_label: Label = null
 var _reconnect_btn: Button = null
 var _public_btn: Button = null
+var _creative_box: HBoxContainer = null
+var _creative_code_input: LineEdit = null
+var _creative_start_btn: Button = null
 var _public_tunnel_watch_timer: float = -1.0
 var _public_tunnel_poll_accum: float = 0.0
 var _live_url_file_path: String = ""
@@ -110,6 +114,11 @@ func show_auth_error(reason: String, clear_saved_auth: bool = false) -> void:
 func hide_menu() -> void:
 	visible = false
 	set_reconnect_visible(false)
+	if _creative_box != null:
+		_creative_box.visible = false
+	if _creative_code_input != null:
+		_creative_code_input.text = ""
+	_update_panel_bounds()
 	if get_viewport() != null:
 		get_viewport().gui_release_focus()
 
@@ -134,7 +143,7 @@ func _refresh_solo_section() -> void:
 
 	if has_local_account:
 		_local_auth_expanded = false
-		var tier: int = clampi(int(local_summary.get("hull_tier", 0)), 0, 5)
+		var tier: int = clampi(int(local_summary.get("hull_tier", 0)), 0, Contracts.ShipClass.MAN_O_WAR)
 		var cname: String = str(Contracts.get_ship_class_spec(tier).get("name", "Schaluppe"))
 		var gold: int = int(local_summary.get("gold", SaveStoreScript.DEFAULT_GOLD))
 		if _solo_info_label != null:
@@ -149,7 +158,7 @@ func _refresh_solo_section() -> void:
 			_solo_account_btn.text = "Lokal Abmelden"
 	elif _save_store.has_solo_save():
 		var data: Dictionary = _save_store.load_solo()
-		var tier: int = clampi(int(data.get("hull_tier", 0)), 0, 5)
+		var tier: int = clampi(int(data.get("hull_tier", 0)), 0, Contracts.ShipClass.MAN_O_WAR)
 		var cname: String = str(Contracts.get_ship_class_spec(tier).get("name", "Schaluppe"))
 		var gold: int = int(data.get("gold", SaveStoreScript.DEFAULT_GOLD))
 		if _solo_info_label != null:
@@ -186,7 +195,11 @@ func _refresh_solo_section() -> void:
 func _update_panel_bounds() -> void:
 	if _outer_panel == null:
 		return
-	var half_h: float = 318.0 if (_local_auth_box != null and _local_auth_box.visible) else 284.0
+	var half_h: float = 284.0
+	if _local_auth_box != null and _local_auth_box.visible:
+		half_h += 34.0
+	if _creative_box != null and _creative_box.visible:
+		half_h += 38.0
 	_outer_panel.offset_top = -half_h
 	_outer_panel.offset_bottom = half_h
 
@@ -255,6 +268,8 @@ func _build_ui() -> void:
 	inner_panel.add_child(vbox)
 
 	var title := _make_label("HIGH SEAS PIXEL PRIVATEER", 25, Color(0.98, 0.85, 0.36), HORIZONTAL_ALIGNMENT_CENTER)
+	title.mouse_filter = Control.MOUSE_FILTER_STOP
+	title.gui_input.connect(_on_creative_trigger_gui_input)
 	vbox.add_child(title)
 	var sub := _make_label("2D Segel-Diorama  •  Dredge-Frachtgrid  •  One-World Multiplayer", 14, Color(0.86, 0.83, 0.74), HORIZONTAL_ALIGNMENT_CENTER)
 	vbox.add_child(sub)
@@ -435,6 +450,74 @@ func _build_ui() -> void:
 	legend_box.add_theme_stylebox_override("panel", legend_style)
 	vbox.add_child(legend_box)
 	legend_box.add_child(_make_label("WASD: Segel & Ruder  •  Q/E: Breitseite  •  Space: Bug  •  Tab/I: Schiffs-Grid  •  F: Hafen & Beute  •  M: Seekarte", 13, Color(0.84, 0.82, 0.75), HORIZONTAL_ALIGNMENT_CENTER))
+
+	_creative_box = HBoxContainer.new()
+	_creative_box.visible = false
+	_creative_box.add_theme_constant_override("separation", 8)
+	vbox.add_child(_creative_box)
+
+	_creative_code_input = LineEdit.new()
+	_creative_code_input.placeholder_text = "Test-Code..."
+	_creative_code_input.max_length = 24
+	_creative_code_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_creative_code_input.text_submitted.connect(func(_t: String): _submit_creative_code())
+	_style_line_edit(_creative_code_input)
+	_creative_box.add_child(_creative_code_input)
+
+	_creative_start_btn = _make_menu_button("Start", Color(0.28, 0.22, 0.44), 14)
+	_creative_start_btn.pressed.connect(_submit_creative_code)
+	_creative_box.add_child(_creative_start_btn)
+
+	var footer_row := HBoxContainer.new()
+	vbox.add_child(footer_row)
+	var footer_spacer := Control.new()
+	footer_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	footer_row.add_child(footer_spacer)
+	var version_lbl := _make_label("v1.3", 11, Color(0.56, 0.55, 0.52, 0.62), HORIZONTAL_ALIGNMENT_RIGHT)
+	version_lbl.mouse_filter = Control.MOUSE_FILTER_STOP
+	version_lbl.gui_input.connect(_on_creative_trigger_gui_input)
+	footer_row.add_child(version_lbl)
+
+
+func _input(event: InputEvent) -> void:
+	if not visible:
+		return
+	if event is InputEventKey:
+		var kev := event as InputEventKey
+		if kev.pressed and not kev.echo and kev.keycode == KEY_F9:
+			toggle_creative_box()
+			if get_viewport() != null:
+				get_viewport().set_input_as_handled()
+
+
+func toggle_creative_box(force_open: int = -1) -> void:
+	if _creative_box == null:
+		return
+	var next_vis: bool = (not _creative_box.visible) if force_open < 0 else (force_open > 0)
+	_creative_box.visible = next_vis
+	_update_panel_bounds()
+	if next_vis and _creative_code_input != null and _creative_code_input.is_inside_tree():
+		_creative_code_input.grab_focus()
+
+
+func _on_creative_trigger_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+			toggle_creative_box()
+
+
+func _submit_creative_code() -> void:
+	var code: String = _creative_code_input.text.strip_edges().to_lower() if _creative_code_input != null else ""
+	if code in ["777", "dev", "pirat"]:
+		if _creative_code_input != null:
+			_creative_code_input.text = ""
+		if _creative_box != null:
+			_creative_box.visible = false
+		_update_panel_bounds()
+		creative_requested.emit()
+	else:
+		set_status("Ungültiger Code.", Color(0.75, 0.72, 0.68))
 
 
 func _on_solo_btn_pressed() -> void:
