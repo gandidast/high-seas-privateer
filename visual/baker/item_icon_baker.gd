@@ -82,21 +82,26 @@ static func bake_item_grid_icon(
 		_:
 			_paint_category_fallback(base_img, base_w, base_h, category, rarity, affix)
 
+	Draw.apply_affix_accents(base_img, affix)
+
 	var img: Image = base_img
 	if affix == Contracts.ItemAffix.CURSED:
-		var cells: Array[Vector2i] = Contracts.GridItemData.compute_cursed_shape(cw, ch)
-		var max_cx: int = cw
-		var max_cy: int = ch
-		for c in cells:
-			max_cx = maxi(max_cx, c.x + 1)
-			max_cy = maxi(max_cy, c.y + 1)
-		img = Draw.create_canvas(max_cx * GRID_CELL_PX, max_cy * GRID_CELL_PX)
-		img.blit_rect(base_img, Rect2i(0, 0, base_w, base_h), Vector2i.ZERO)
-		if cells.size() > cw * ch:
-			_paint_cursed_eldritch_growth(img, cells[cells.size() - 1], cw, ch)
+		var has_extra_cell: bool = false
+		if category != Contracts.ItemCategory.SAIL:
+			var cells: Array[Vector2i] = Contracts.GridItemData.compute_cursed_shape(cw, ch)
+			var max_cx: int = cw
+			var max_cy: int = ch
+			for c in cells:
+				max_cx = maxi(max_cx, c.x + 1)
+				max_cy = maxi(max_cy, c.y + 1)
+			img = Draw.create_canvas(max_cx * GRID_CELL_PX, max_cy * GRID_CELL_PX)
+			img.blit_rect(base_img, Rect2i(0, 0, base_w, base_h), Vector2i.ZERO)
+			if cells.size() > cw * ch:
+				has_extra_cell = true
+				_paint_cursed_eldritch_growth(img, cells[cells.size() - 1], cw, ch)
+		_paint_cursed_eldritch_overlay(img, item_id, category, base_w, base_h, has_extra_cell)
 
-	Draw.apply_affix_accents(img, affix)
-	var outline_col: Color = Color(0.18, 0.04, 0.28, 1.0) if affix == Contracts.ItemAffix.CURSED else Draw.OUTLINE_COLOR
+	var outline_col: Color = Draw.CURSED_OUTLINE if affix == Contracts.ItemAffix.CURSED else Draw.OUTLINE_COLOR
 	Draw.apply_pixel_outline(img, outline_col)
 	return ImageTexture.create_from_image(img)
 
@@ -104,46 +109,154 @@ static func bake_item_grid_icon(
 static func _paint_cursed_eldritch_growth(img: Image, extra_cell: Vector2i, cw: int, ch: int) -> void:
 	var px0: int = extra_cell.x * GRID_CELL_PX
 	var py0: int = extra_cell.y * GRID_CELL_PX
-	var eld_dark := Color(0.24, 0.09, 0.36, 1.0)
-	var eld_mid := Color(0.46, 0.16, 0.62, 1.0)
-	var eld_hi := Color(0.76, 0.32, 0.88, 1.0)
-	var eye_glow := Color(0.32, 0.98, 0.78, 1.0)
-	var eye_core := Color(0.96, 0.22, 0.42, 1.0)
-	var suction := Color(0.84, 0.44, 0.94, 1.0)
 
-	# Bridge tendrils from adjacent base cell into the extra cursed cell
 	if extra_cell.x >= cw:
-		Draw.rect(img, px0 - 5, py0 + 7, 11, 10, eld_dark)
-		Draw.rect(img, px0 - 4, py0 + 9, 10, 6, eld_mid)
-		Draw.rect(img, px0 + 3, py0 + 5, 13, 14, eld_dark)
-		Draw.rect(img, px0 + 5, py0 + 7, 10, 10, eld_mid)
-		# Curled Abyssal Horn / Tentacle tip
-		Draw.rect(img, px0 + 13, py0 + 4, 6, 7, eld_dark)
-		Draw.rect(img, px0 + 15, py0 + 3, 5, 5, eld_hi)
-		Draw.rect(img, px0 + 13, py0 + 15, 6, 5, eld_mid)
+		# Thick tentacle emerging from adjacent base cell and curling into a hooked tip
+		Draw.draw_cursed_tentacle(
+			img,
+			Vector2(float(px0 - 4), float(py0 + 13)),
+			Vector2(float(px0 + 13), float(py0 + 16)),
+			Vector2(float(px0 + 18), float(py0 + 5)),
+			4.0, 1.0, 4, Vector2(0.4, 0.9)
+		)
+		Draw.draw_cursed_tentacle(
+			img,
+			Vector2(float(px0 - 2), float(py0 + 15)),
+			Vector2(float(px0 + 8), float(py0 + 20)),
+			Vector2(float(px0 + 17), float(py0 + 19)),
+			2.6, 0.85, 4, Vector2(0.0, -1.0)
+		)
+		Draw.circle_inner(img, float(px0 + 9), float(py0 + 11), 5.2, Draw.CURSED_TENTACLE_DARK)
+		Draw.circle_inner(img, float(px0 + 8.5), float(py0 + 10.5), 4.0, Draw.CURSED_TENTACLE_MID)
+		Draw.draw_eldritch_eye(img, px0 + 9, py0 + 11, true)
+		Draw.draw_eldritch_eye(img, px0 + 15, py0 + 15, false)
+		Draw.draw_abyssal_barnacle(img, px0 + 4, py0 + 7)
+		Draw.draw_cursed_kelp_strand(img, px0 + 12, py0 + 5, 4, 1)
+		Draw.draw_cursed_slime_drip(img, px0 + 6, py0 + 16, 5, true)
+		Draw.draw_cursed_slime_drip(img, px0 + 13, py0 + 18, 4, false)
 	else:
-		Draw.rect(img, px0 + 7, py0 - 5, 10, 11, eld_dark)
-		Draw.rect(img, px0 + 9, py0 - 4, 6, 10, eld_mid)
-		Draw.rect(img, px0 + 5, py0 + 3, 14, 13, eld_dark)
-		Draw.rect(img, px0 + 7, py0 + 5, 10, 10, eld_mid)
-		Draw.rect(img, px0 + 4, py0 + 14, 7, 6, eld_dark)
-		Draw.rect(img, px0 + 14, py0 + 13, 6, 6, eld_hi)
+		Draw.draw_cursed_tentacle(
+			img,
+			Vector2(float(px0 + 12), float(py0 - 4)),
+			Vector2(float(px0 + 16), float(py0 + 13)),
+			Vector2(float(px0 + 19), float(py0 + 15)),
+			4.0, 1.0, 4, Vector2(-0.8, 0.4)
+		)
+		Draw.draw_cursed_tentacle(
+			img,
+			Vector2(float(px0 + 9), float(py0 - 2)),
+			Vector2(float(px0 + 5), float(py0 + 12)),
+			Vector2(float(px0 + 4), float(py0 + 18)),
+			2.6, 0.85, 4, Vector2(1.0, 0.0)
+		)
+		Draw.circle_inner(img, float(px0 + 11), float(py0 + 10), 5.2, Draw.CURSED_TENTACLE_DARK)
+		Draw.circle_inner(img, float(px0 + 10.5), float(py0 + 9.5), 4.0, Draw.CURSED_TENTACLE_MID)
+		Draw.draw_eldritch_eye(img, px0 + 11, py0 + 10, true)
+		Draw.draw_abyssal_barnacle(img, px0 + 16, py0 + 6)
+		Draw.draw_cursed_kelp_strand(img, px0 + 6, py0 + 4, 4, -1)
+		Draw.draw_cursed_slime_drip(img, px0 + 9, py0 + 16, 4, true)
+		Draw.draw_cursed_slime_drip(img, px0 + 15, py0 + 15, 4, false)
 
-	# Glowing spectral abyssal eye in center of the extra cell
-	Draw.rect(img, px0 + 8, py0 + 9, 7, 6, eld_dark)
-	Draw.rect(img, px0 + 9, py0 + 10, 5, 4, eye_glow)
-	Draw.rect(img, px0 + 11, py0 + 10, 1, 4, eye_core)
-	img.set_pixel(px0 + 9, py0 + 10, Color(0.92, 1.0, 0.96, 1.0))
 
-	# Suction / bone spikes & glowing runes
-	img.set_pixel(px0 + 6, py0 + 6, suction)
-	img.set_pixel(px0 + 16, py0 + 6, suction)
-	img.set_pixel(px0 + 6, py0 + 17, eye_glow)
-	img.set_pixel(px0 + 17, py0 + 16, suction)
-	if extra_cell.y < ch:
-		img.set_pixel(px0 - 2, py0 + 11, eye_glow)
-	else:
-		img.set_pixel(px0 + 11, py0 - 2, eye_glow)
+static func _paint_cursed_eldritch_overlay(
+	img: Image,
+	item_id: String,
+	category: int,
+	base_w: int,
+	base_h: int,
+	has_extra_cell: bool
+) -> void:
+	## Wraps base item silhouettes with tentacles, suction cups, slime drips, kelp & eldritch eyes.
+	var min_x: int = base_w
+	var min_y: int = base_h
+	var max_x: int = -1
+	var max_y: int = -1
+	var top_y: PackedInt32Array = PackedInt32Array()
+	var bot_y: PackedInt32Array = PackedInt32Array()
+	top_y.resize(base_w)
+	bot_y.resize(base_w)
+	for x in range(base_w):
+		top_y[x] = -1
+		bot_y[x] = -1
+		for y in range(base_h):
+			if img.get_pixel(x, y).a > 0.5:
+				if top_y[x] < 0:
+					top_y[x] = y
+				bot_y[x] = y
+				min_x = mini(min_x, x)
+				min_y = mini(min_y, y)
+				max_x = maxi(max_x, x)
+				max_y = maxi(max_y, y)
+
+	if max_x < min_x or max_y < min_y:
+		min_x = 3
+		min_y = 3
+		max_x = base_w - 4
+		max_y = base_h - 4
+
+	var span_w: int = maxi(4, max_x - min_x)
+	var span_h: int = maxi(4, max_y - min_y)
+	var is_sail: bool = (category == Contracts.ItemCategory.SAIL)
+
+	# 1. Kelp & sea-algae tendrils hanging from upper silhouette rim
+	var kelp_fractions := PackedFloat32Array([0.28, 0.72]) if base_w <= 24 else PackedFloat32Array([0.22, 0.52, 0.80])
+	for idx in range(kelp_fractions.size()):
+		var kx: int = clampi(min_x + int(round(float(span_w) * kelp_fractions[idx])), 2, base_w - 3)
+		var ky: int = top_y[kx]
+		if ky >= 0:
+			Draw.draw_cursed_kelp_strand(img, kx, ky, 4 if base_h <= 24 else 5, 1 if idx % 2 == 0 else -1)
+
+	# 2. Writhing tentacles with suction cups gripping corners/edges
+	var r0_small: float = 1.9 if (base_w <= 24 and base_h <= 24) else 2.5
+	# Lower-left gripping tentacle
+	Draw.draw_cursed_tentacle(
+		img,
+		Vector2(float(maxi(2, min_x)), float(mini(base_h - 3, max_y))),
+		Vector2(float(maxi(2, min_x + 1)), float(maxi(3, max_y - span_h / 3))),
+		Vector2(float(mini(base_w - 4, min_x + maxi(6, span_w / 3))), float(maxi(3, max_y - 4))),
+		r0_small, 0.80, 4, Vector2(0.4, 0.9)
+	)
+	# Upper-right gripping tentacle (for sails and multi-cell items)
+	if is_sail or base_w >= 40 or base_h >= 40:
+		Draw.draw_cursed_tentacle(
+			img,
+			Vector2(float(mini(base_w - 3, max_x)), float(maxi(3, min_y + 3))),
+			Vector2(float(mini(base_w - 3, max_x - 2)), float(mini(base_h - 4, min_y + 10))),
+			Vector2(float(maxi(3, max_x - maxi(7, span_w / 3))), float(mini(base_h - 4, min_y + 7))),
+			r0_small, 0.78, 4, Vector2(-0.5, 0.85)
+		)
+
+	# 3. Slimy bioluminescent green goo drips from bottom edge
+	var drip_fractions := PackedFloat32Array([0.34, 0.68]) if base_w <= 24 else PackedFloat32Array([0.20, 0.48, 0.78])
+	for idx in range(drip_fractions.size()):
+		var dx: int = clampi(min_x + int(round(float(span_w) * drip_fractions[idx])), 2, base_w - 3)
+		var dy: int = bot_y[dx]
+		if dy >= 0:
+			var drip_len: int = 3 + ((idx + dx) % 3)
+			Draw.draw_cursed_slime_drip(img, dx, maxi(2, dy - 1), drip_len, base_w >= 36)
+
+	# 4. Abyssal barnacles clinging to rim
+	var bx: int = clampi(min_x + span_w / 4, 3, base_w - 4)
+	if top_y[bx] >= 0:
+		Draw.draw_abyssal_barnacle(img, bx, clampi(top_y[bx] + 3, 3, base_h - 4))
+	if base_w >= 36 or base_h >= 36:
+		var bx2: int = clampi(max_x - span_w / 5, 3, base_w - 4)
+		if bot_y[bx2] >= 0:
+			Draw.draw_abyssal_barnacle(img, bx2, clampi(bot_y[bx2] - 3, 3, base_h - 4))
+
+	# 5. Eldritch eyes on cursed sails (which stay rectangular) & items without L-cell
+	if is_sail:
+		var ecx: int = base_w / 2
+		if item_id == "storm_sails_2x2":
+			Draw.draw_eldritch_eye(img, ecx, 33, true)
+			Draw.draw_abyssal_barnacle(img, ecx - 9, 17)
+			Draw.draw_abyssal_barnacle(img, ecx + 9, 17)
+		elif item_id == "crows_nest_1x2":
+			Draw.draw_eldritch_eye(img, ecx, 19, false)
+		else:
+			Draw.draw_eldritch_eye(img, ecx, base_h / 2, false)
+	elif not has_extra_cell:
+		Draw.draw_eldritch_eye(img, base_w / 2, base_h / 2, base_w >= 48 and base_h >= 48)
 
 
 static func _paint_category_fallback(
@@ -194,8 +307,41 @@ static func bake_module_texture(category: int, rarity: int = 0, affix: int = 0) 
 			_draw_module_cargo_crate(img)
 
 	Draw.apply_affix_accents(img, affix)
-	Draw.apply_pixel_outline(img, Draw.OUTLINE_COLOR)
+	if affix == Contracts.ItemAffix.CURSED:
+		_paint_cursed_module_overlay(img, category)
+	var outline_col: Color = Draw.CURSED_OUTLINE if affix == Contracts.ItemAffix.CURSED else Draw.OUTLINE_COLOR
+	Draw.apply_pixel_outline(img, outline_col)
 	return ImageTexture.create_from_image(img)
+
+
+static func _paint_cursed_module_overlay(img: Image, category: int) -> void:
+	## Adds crisp 16x16 eldritch tentacles, slime drips, kelp & abyssal eyes to deck modules.
+	Draw.draw_cursed_kelp_strand(img, 5, 3, 3, 1)
+	Draw.draw_cursed_slime_drip(img, 5, 11, 3, false)
+	Draw.draw_cursed_slime_drip(img, 10, 11, 2, false)
+	Draw.draw_cursed_tentacle(
+		img,
+		Vector2(3.0, 12.0),
+		Vector2(2.0, 7.0),
+		Vector2(6.0, 5.0),
+		1.45, 0.70, 3, Vector2(1.0, 0.2)
+	)
+	match category:
+		Contracts.ItemCategory.SAIL:
+			Draw.draw_eldritch_eye(img, 8, 7, false)
+		Contracts.ItemCategory.CANNON, Contracts.ItemCategory.BOW_WEAPON:
+			Draw.px_inner(img, 13, 7, Draw.CURSED_SLIME_GLOW)
+			Draw.px_inner(img, 13, 8, Draw.CURSED_SLIME_CORE)
+			Draw.draw_abyssal_barnacle(img, 9, 5)
+		Contracts.ItemCategory.POWDER_BARREL:
+			Draw.px_inner(img, 8, 6, Draw.CURSED_SLIME_GLOW)
+			Draw.px_inner(img, 8, 7, Draw.CURSED_SLIME_CORE)
+			Draw.draw_abyssal_barnacle(img, 10, 8)
+		Contracts.ItemCategory.HULL:
+			Draw.draw_abyssal_barnacle(img, 10, 6)
+			Draw.draw_eldritch_eye(img, 8, 8, false)
+		_:
+			Draw.draw_eldritch_eye(img, 8, 7, false)
 
 
 static func _draw_module_cannon(img: Image, rarity: int, affix: int) -> void:

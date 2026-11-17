@@ -350,7 +350,7 @@ class GridItemData extends Resource:
 		return cells
 
 	func ensure_affix_shape_and_bonuses() -> void:
-		if affix == ItemAffix.CURSED:
+		if affix == ItemAffix.CURSED and category != ItemCategory.SAIL:
 			if shape_offsets.is_empty():
 				shape_offsets = compute_cursed_shape(width, height)
 		else:
@@ -529,7 +529,7 @@ class GridItemData extends Resource:
 		copy.grid_pos = grid_pos
 		copy.rotated = rotated
 		copy.rot_steps = rot_steps
-		if copy.affix == affix and not shape_offsets.is_empty():
+		if copy.affix == affix and copy.category != ItemCategory.SAIL and not shape_offsets.is_empty():
 			copy.shape_offsets = shape_offsets.duplicate()
 		else:
 			copy.ensure_affix_shape_and_bonuses()
