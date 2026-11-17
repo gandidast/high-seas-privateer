@@ -1,6 +1,6 @@
 class_name ShipPhysics
 extends Node
-## Snappy arcade sailing physics ("Privateers"-feel) with 6 ship classes,
+## Snappy arcade sailing physics ("Privateers"-feel) with 9 ship classes,
 ## 3 sail states, forgiving upwind handling, rudder inertia, shallow-water damping,
 ## tangential coastline scraping, passive hull repair, burn DoT, and safe-harbor protection.
 
@@ -44,7 +44,7 @@ func setup(
 	heading = wrapf(p_heading, -PI, PI)
 	faction = p_faction
 	ship_name = p_name
-	hull_tier = clampi(stats.hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	hull_tier = clampi(stats.hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.MAN_O_WAR)
 	_sync_hull_radius_for_tier()
 	velocity = Vector2.ZERO
 	speed = 0.0
@@ -77,7 +77,7 @@ func is_harbor_protected() -> bool:
 
 
 func upgrade_ship_class(new_tier: int) -> void:
-	var clamped_tier: int = clampi(new_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	var clamped_tier: int = clampi(new_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.MAN_O_WAR)
 	var old_spec: Dictionary = Contracts.get_ship_class_spec(hull_tier)
 	var new_spec: Dictionary = Contracts.get_ship_class_spec(clamped_tier)
 	var old_max: float = maxf(1.0, max_hp)
@@ -93,6 +93,7 @@ func upgrade_ship_class(new_tier: int) -> void:
 	var old_base_speed: float = stats.base_max_speed
 	var old_base_armor: float = float(old_spec.get("armor", 0.0))
 	var old_base_turn: float = float(old_spec.get("turn_speed", 1.75))
+	var old_innate_ram: float = float(old_spec.get("ram_bonus", 0.0))
 	stats.hull_tier = hull_tier
 
 	stats.base_max_hp = float(new_spec.get("base_hp", 120.0))
@@ -105,6 +106,9 @@ func upgrade_ship_class(new_tier: int) -> void:
 	var speed_delta: float = stats.base_max_speed - old_base_speed
 	var armor_delta: float = float(new_spec.get("armor", 0.0)) - old_base_armor
 	var turn_delta: float = float(new_spec.get("turn_speed", 1.75)) - old_base_turn
+	var new_innate_ram: float = float(new_spec.get("ram_bonus", 0.0))
+	stats.innate_ram_bonus = new_innate_ram
+	stats.ram_damage_bonus = maxf(0.0, stats.ram_damage_bonus - old_innate_ram + new_innate_ram)
 	stats.max_hp = maxf(40.0, stats.max_hp + hp_delta)
 	stats.max_speed = maxf(35.0, stats.max_speed + speed_delta)
 	stats.armor = maxf(0.0, stats.armor + armor_delta)
@@ -123,7 +127,7 @@ func apply_stats(new_stats: Contracts.ShipStats) -> void:
 	var old_max: float = maxf(1.0, max_hp)
 	var ratio: float = clampf(hp / old_max, 0.0, 1.0)
 	stats = new_stats
-	hull_tier = clampi(stats.hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	hull_tier = clampi(stats.hull_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.MAN_O_WAR)
 	_sync_hull_radius_for_tier()
 	max_hp = maxf(10.0, stats.max_hp)
 	if not is_sunk:
@@ -346,7 +350,7 @@ func apply_sync_dict(d: Dictionary) -> void:
 	ship_id = int(d.get("ship_id", ship_id))
 	faction = int(d.get("faction", faction))
 	ship_name = str(d.get("ship_name", ship_name))
-	hull_tier = clampi(int(d.get("hull_tier", hull_tier)), Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	hull_tier = clampi(int(d.get("hull_tier", hull_tier)), Contracts.ShipClass.SLOOP, Contracts.ShipClass.MAN_O_WAR)
 	_sync_hull_radius_for_tier()
 	world_pos = Vector2(float(d.get("x", world_pos.x)), float(d.get("y", world_pos.y)))
 	velocity = Vector2(float(d.get("vx", velocity.x)), float(d.get("vy", velocity.y)))

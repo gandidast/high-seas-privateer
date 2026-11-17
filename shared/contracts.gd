@@ -9,7 +9,7 @@ extends Node
 ## via both `Contracts` (class_name) and `EventBus` (Autoload singleton).
 
 const DEFAULT_WORLD_SEED: int = 1337420
-const WORLD_HALF_EXTENT: float = 3600.0
+const WORLD_HALF_EXTENT: float = 10800.0
 const SERVER_DEFAULT_PORT: int = 8080
 
 # Water depth thresholds returned by get_water_depth(world_pos, world_seed):
@@ -67,7 +67,10 @@ enum ShipClass {
 	BRIGANTINE = 2,      ## Brigg (Tier 2: Allrounder, 7x5 Grid)
 	FRIGATE = 3,         ## Fregatte (Tier 3: 8x6 Grid, schwere Breitseite)
 	CORSAIR_CLIPPER = 4, ## Kaper-Klipper (Tier 4: schnellster Jäger, +15% Nachladegeschwindigkeit)
-	WAR_GALLEON = 5      ## Kriegsgaleone (Tier 5: 10x7 Grid, schwere Panzerung & Feuerkraft)
+	WAR_GALLEON = 5,     ## Kriegsgaleone (Tier 5: 10x7 Grid, schwere Panzerung & Feuerkraft)
+	CORSAIR_XEBEC = 6,   ## Korsaren-Schebecke (Tier 6: 8x5 Grid, 2 Bug-Slots, +12% Nachladen, Ramm-Jäger)
+	IRONCLAD = 7,        ## Panzer-Monitor (Tier 7: 9x6 Grid, schwere Eisenpanzerung & Rammsporn)
+	MAN_O_WAR = 8        ## Linienschiff (Tier 8: 12x7 Grid, gewaltiges Dreidecker-Flaggschiff)
 }
 
 const SHIP_CLASS_SPECS: Dictionary = {
@@ -109,9 +112,9 @@ const SHIP_CLASS_SPECS: Dictionary = {
 		"cost": 650,
 		"grid_cols": 7,
 		"grid_rows": 5,
-		"base_hp": 225.0,
+		"base_hp": 260.0,
 		"base_speed": 101.0,
-		"armor": 2.0,
+		"armor": 4.5,
 		"turn_speed": 1.60,
 		"inertia": 5.6,
 		"accel": 45.0,
@@ -125,9 +128,9 @@ const SHIP_CLASS_SPECS: Dictionary = {
 		"cost": 1400,
 		"grid_cols": 8,
 		"grid_rows": 6,
-		"base_hp": 330.0,
+		"base_hp": 420.0,
 		"base_speed": 97.0,
-		"armor": 4.0,
+		"armor": 9.0,
 		"turn_speed": 1.42,
 		"inertia": 4.6,
 		"accel": 42.0,
@@ -157,20 +160,71 @@ const SHIP_CLASS_SPECS: Dictionary = {
 		"cost": 4800,
 		"grid_cols": 10,
 		"grid_rows": 7,
-		"base_hp": 620.0,
+		"base_hp": 760.0,
 		"base_speed": 90.0,
-		"armor": 8.5,
+		"armor": 15.0,
 		"turn_speed": 1.18,
 		"inertia": 3.8,
 		"accel": 38.0,
 		"max_weight": 190.0,
 		"hull_radius": 23.0,
 		"reload_bonus": 1.0
+	},
+	ShipClass.CORSAIR_XEBEC: {
+		"tier": ShipClass.CORSAIR_XEBEC,
+		"name": "Korsaren-Schebecke",
+		"cost": 3600,
+		"grid_cols": 8,
+		"grid_rows": 5,
+		"base_hp": 310.0,
+		"base_speed": 128.0,
+		"armor": 5.5,
+		"turn_speed": 1.92,
+		"inertia": 6.8,
+		"accel": 54.0,
+		"max_weight": 95.0,
+		"hull_radius": 17.0,
+		"reload_bonus": 1.12,
+		"ram_bonus": 12.0,
+		"bow_slots": 2
+	},
+	ShipClass.IRONCLAD: {
+		"tier": ShipClass.IRONCLAD,
+		"name": "Panzer-Monitor",
+		"cost": 5800,
+		"grid_cols": 9,
+		"grid_rows": 6,
+		"base_hp": 820.0,
+		"base_speed": 86.0,
+		"armor": 24.0,
+		"turn_speed": 1.15,
+		"inertia": 3.8,
+		"accel": 38.0,
+		"max_weight": 185.0,
+		"hull_radius": 22.0,
+		"reload_bonus": 1.0,
+		"ram_bonus": 24.0
+	},
+	ShipClass.MAN_O_WAR: {
+		"tier": ShipClass.MAN_O_WAR,
+		"name": "Linienschiff",
+		"cost": 8800,
+		"grid_cols": 12,
+		"grid_rows": 7,
+		"base_hp": 1040.0,
+		"base_speed": 84.0,
+		"armor": 18.5,
+		"turn_speed": 1.02,
+		"inertia": 3.2,
+		"accel": 34.0,
+		"max_weight": 260.0,
+		"hull_radius": 25.0,
+		"reload_bonus": 1.0
 	}
 }
 
 static func get_ship_class_spec(tier: int) -> Dictionary:
-	var clamped_tier: int = clampi(tier, ShipClass.SLOOP, ShipClass.WAR_GALLEON)
+	var clamped_tier: int = clampi(tier, ShipClass.SLOOP, ShipClass.MAN_O_WAR)
 	return SHIP_CLASS_SPECS.get(clamped_tier, SHIP_CLASS_SPECS[ShipClass.SLOOP])
 
 enum WeatherState {
@@ -632,7 +686,7 @@ class GridItemData extends Resource:
 
 
 class ShipStats extends RefCounted:
-	var hull_tier: int = 0                ## 0 = Schaluppe, 1 = Brigg, 2 = Schwere Fregatte/Galeone
+	var hull_tier: int = 0                ## 0 = Schaluppe .. 8 = Linienschiff
 	var base_max_hp: float = 120.0
 	var max_hp: float = 120.0
 	var armor: float = 0.0
@@ -658,6 +712,7 @@ class ShipStats extends RefCounted:
 	var powder_barrel_count: int = 0
 	var sail_upgrade_count: int = 0
 	var passive_repair_rate: float = 0.0
+	var innate_ram_bonus: float = 0.0
 	var ram_damage_bonus: float = 0.0
 	var vision_bonus: float = 0.0
 	var burn_bonus_dps: float = 0.0
@@ -688,6 +743,7 @@ class ShipStats extends RefCounted:
 			"powder_barrel_count": powder_barrel_count,
 			"sail_upgrade_count": sail_upgrade_count,
 			"passive_repair_rate": passive_repair_rate,
+			"innate_ram_bonus": innate_ram_bonus,
 			"ram_damage_bonus": ram_damage_bonus,
 			"vision_bonus": vision_bonus,
 			"burn_bonus_dps": burn_bonus_dps,
@@ -719,6 +775,7 @@ class ShipStats extends RefCounted:
 		s.powder_barrel_count = int(d.get("powder_barrel_count", 0))
 		s.sail_upgrade_count = int(d.get("sail_upgrade_count", 0))
 		s.passive_repair_rate = float(d.get("passive_repair_rate", 0.0))
+		s.innate_ram_bonus = float(d.get("innate_ram_bonus", 0.0))
 		s.ram_damage_bonus = float(d.get("ram_damage_bonus", 0.0))
 		s.vision_bonus = float(d.get("vision_bonus", 0.0))
 		s.burn_bonus_dps = float(d.get("burn_bonus_dps", 0.0))
@@ -851,8 +908,8 @@ class QuestData extends RefCounted:
 # (sin, cos, atan2, length, clamp) so that GLSL in `ocean_shader.gdshader` and
 # GDScript in `world_map.gd` / `ship_physics.gd` produce 100% identical results!
 
-const ISLAND_COUNT: int = 8
-const SAFE_HARBOR_INDICES: Array[int] = [0, 1, 2]
+const ISLAND_COUNT: int = 18
+const SAFE_HARBOR_INDICES: Array[int] = [0, 1, 2, 6, 12]
 
 const ISLAND_NAMES: Array[String] = [
 	"Port Tortuga",
@@ -862,21 +919,41 @@ const ISLAND_NAMES: Array[String] = [
 	"Schädelriff",
 	"Neu-Nassau",
 	"Sturmkap-Feste",
-	"Blutgold-Insel"
+	"Blutgold-Insel",
+	"Teufelsklippe",
+	"Korallen-Lagune",
+	"Schwarzwasser-Kap",
+	"Donnerbucht",
+	"Port Royalia",
+	"Geisterfelsen",
+	"Sirenensund",
+	"Kanonen-Bastion",
+	"Nebelkap",
+	"Leviathan-Atoll"
 ]
 
 # Base island archetypes: Vector4(base_x, base_y, base_radius, harbor_angle_rad)
-# Placed across [-2500..+2500] around the open central starting sea (0, 0 is deep navigable ocean!).
-# Indices 0..2 are safe harbors (NW, NE, South); indices 3..7 are wild pirate/fort/treasure islands.
+# Placed across [-9200..+9200] around the open central starting sea (0, 0 is deep navigable ocean!).
+# Indices 0, 1, 2, 6, 12 are safe harbors (5 total); the remaining 13 indices are wild pirate/fort/treasure islands.
 const BASE_ISLAND_SPECS: Array[Vector4] = [
-	Vector4(-780.0, -480.0, 185.0, 0.55),   # 0: Port Tortuga (Safe Harbor NW, facing SE toward spawn)
-	Vector4(1520.0, -1180.0, 195.0, 2.45),  # 1: Smaragd-Atoll (Safe Harbor NE, facing SW)
-	Vector4(120.0, 1840.0, 205.0, -1.57),   # 2: San Aurelio (Safe Harbor South, facing North)
-	Vector4(-1960.0, 920.0, 185.0, -0.45),  # 3: Krakenzahn-Bucht (Wild WSW)
-	Vector4(-220.0, -2120.0, 195.0, 1.57),  # 4: Schädelriff (Wild North)
-	Vector4(2040.0, 680.0, 200.0, -2.65),   # 5: Neu-Nassau (Wild East)
-	Vector4(-2140.0, -1680.0, 190.0, 0.72), # 6: Sturmkap-Feste (Wild NW)
-	Vector4(1880.0, 2100.0, 210.0, -2.25)   # 7: Blutgold-Insel (Wild SE)
+	Vector4(-880.0, -540.0, 190.0, 0.55),   # 0: Port Tortuga (Safe Harbor Central-NW, facing SE toward spawn)
+	Vector4(2450.0, -1850.0, 200.0, 2.45),  # 1: Smaragd-Atoll (Safe Harbor Inner-NE, facing SW)
+	Vector4(320.0, 2950.0, 210.0, -1.57),   # 2: San Aurelio (Safe Harbor Inner-South, facing North)
+	Vector4(-3200.0, 1650.0, 195.0, -0.45), # 3: Krakenzahn-Bucht (Wild WSW)
+	Vector4(-480.0, -3650.0, 205.0, 1.57),  # 4: Schädelriff (Wild North)
+	Vector4(3450.0, 1400.0, 200.0, -2.65),  # 5: Neu-Nassau (Wild East)
+	Vector4(-5600.0, -4400.0, 210.0, 0.65), # 6: Sturmkap-Feste (Safe Harbor NW)
+	Vector4(4850.0, 4950.0, 220.0, -2.25),  # 7: Blutgold-Insel (Wild SE)
+	Vector4(-7800.0, -7600.0, 230.0, 0.78), # 8: Teufelsklippe (Wild Far-NW)
+	Vector4(-2600.0, -7800.0, 210.0, 1.40), # 9: Korallen-Lagune (Wild Far-NNW)
+	Vector4(2900.0, -7400.0, 225.0, 1.85),  # 10: Schwarzwasser-Kap (Wild Far-NNE)
+	Vector4(8100.0, -6800.0, 235.0, 2.55),  # 11: Donnerbucht (Wild Far-NE)
+	Vector4(6600.0, -1600.0, 215.0, -2.90), # 12: Port Royalia (Safe Harbor Far-East)
+	Vector4(8400.0, 3200.0, 225.0, -2.40),  # 13: Geisterfelsen (Wild Far-ESE)
+	Vector4(7600.0, 8200.0, 240.0, -2.35),  # 14: Sirenensund (Wild Far-SE)
+	Vector4(1800.0, 7900.0, 220.0, -1.65),  # 15: Kanonen-Bastion (Wild Far-SSE)
+	Vector4(-4200.0, 7400.0, 230.0, -1.15), # 16: Nebelkap (Wild Far-SSW)
+	Vector4(-8300.0, 3400.0, 235.0, -0.35)  # 17: Leviathan-Atoll (Wild Far-WSW)
 ]
 
 static func _seed_offset(world_seed: int, idx: int) -> Vector3:
@@ -922,7 +999,7 @@ static func get_island_coast_radius(idx: int, theta: float, world_seed: int = DE
 	var effective_r: float = base_r * (1.0 + wave - 0.28 * cove_factor)
 	return effective_r
 
-## Returns the deterministic array of all 8 named islands (3 safe harbors, 5 wild islands).
+## Returns the deterministic array of all 18 named islands (5 safe harbors, 13 wild islands).
 static func get_islands(world_seed: int = DEFAULT_WORLD_SEED) -> Array[IslandData]:
 	var result: Array[IslandData] = []
 	for i in range(ISLAND_COUNT):

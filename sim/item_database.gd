@@ -130,7 +130,7 @@ static func _ensure_templates() -> void:
 		7.0, 85,
 		Color(0.52, 0.35, 0.22), Color(0.74, 0.56, 0.38),
 		0.0, 3.0, 260.0, 220.0, 0.0, 6.0,
-		0.0, 0.0, 3.0, 45.0, 0.0, 0.0
+		0.0, 0.0, 7.5, 95.0, 0.0, 0.0
 	)
 
 	_register(
@@ -144,7 +144,7 @@ static func _ensure_templates() -> void:
 		8.0, 130,
 		Color(0.72, 0.42, 0.26), Color(0.42, 0.78, 0.66),
 		0.0, 3.0, 260.0, 220.0, 0.0, 6.0,
-		8.0, 0.0, 5.0, 30.0, 0.0, 0.0
+		10.0, 0.0, 11.0, 90.0, 0.0, 0.0
 	)
 
 	_register(
@@ -238,7 +238,7 @@ static func _ensure_templates() -> void:
 		8.0, 140,
 		Color(0.32, 0.36, 0.44), Color(0.84, 0.88, 0.95),
 		0.0, 3.0, 260.0, 220.0, 0.0, 6.0,
-		0.0, 0.0, 4.0, 25.0, 0.0, 0.0,
+		0.0, 0.0, 6.5, 45.0, 0.0, 0.0,
 		0.0, 0.0, 35.0, 0.0, 0.0
 	)
 
@@ -534,9 +534,9 @@ static func get_weapon_ids_by_tier(min_rarity: int = 0, max_rarity: int = 4, inc
 	return ids
 
 
-## Creates a weapon drop scaled to an enemy ship or harbor tier (0..5).
+## Creates a weapon drop scaled to an enemy ship or harbor tier (0..8).
 static func create_tiered_weapon(tier: int, rng: RandomNumberGenerator = null) -> Contracts.GridItemData:
-	var clamped_tier: int = clampi(tier, 0, 5)
+	var clamped_tier: int = clampi(tier, 0, 8)
 	var min_r: int = Contracts.ItemRarity.COMMON
 	var max_r: int = Contracts.ItemRarity.UNCOMMON
 	match clamped_tier:
@@ -549,7 +549,7 @@ static func create_tiered_weapon(tier: int, rng: RandomNumberGenerator = null) -
 		3:
 			min_r = Contracts.ItemRarity.RARE
 			max_r = Contracts.ItemRarity.RARE
-		4, 5:
+		4, 5, 6, 7, 8:
 			min_r = Contracts.ItemRarity.RARE
 			max_r = Contracts.ItemRarity.LEGENDARY
 

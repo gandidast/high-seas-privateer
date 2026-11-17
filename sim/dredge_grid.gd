@@ -1,7 +1,7 @@
 class_name DredgeGrid
 extends Node
 ## Dredge-inspired dynamic Tetris ship inventory & stat compiler.
-## Handles 6 ship classes (6x4 Sloop up to 10x7 War Galleon), slot-type constraints
+## Handles 9 ship classes (6x4 Sloop up to 12x7 Man-o'-War), slot-type constraints
 ## (including BOW_WEAPON slots), adjacency synergies (powder barrels, alchemist powder,
 ## gunner quarters), crew/hull/sail upgrades, and weight penalties.
 
@@ -26,7 +26,7 @@ func get_grid_height() -> int:
 
 
 func set_hull_tier(new_tier: int) -> void:
-	hull_tier = clampi(new_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	hull_tier = clampi(new_tier, Contracts.ShipClass.SLOOP, Contracts.ShipClass.MAN_O_WAR)
 	_evict_incompatible_items_to_stash()
 	compile_stats()
 
@@ -65,7 +65,12 @@ func get_slot_type(gx: int, gy: int) -> int:
 		return Contracts.SlotType.DECK_PORT
 	if gy == h - 1:
 		return Contracts.SlotType.DECK_STARBOARD
-	if gx == w - 1 and gy >= 1 and gy <= h - 2 and gy >= (h - 1) / 2 and gy <= h / 2:
+	if hull_tier == Contracts.ShipClass.CORSAIR_XEBEC:
+		if gx == w - 1 and gy >= 1 and gy <= h - 2:
+			return Contracts.SlotType.BOW
+		if gx == w - 2 and (gy == 1 or gy == h - 2):
+			return Contracts.SlotType.BOW
+	elif gx == w - 1 and gy >= 1 and gy <= h - 2 and gy >= (h - 1) / 2 and gy <= h / 2:
 		return Contracts.SlotType.BOW
 	var is_clipper: bool = (hull_tier == Contracts.ShipClass.CORSAIR_CLIPPER)
 	var mast_w: int = 4 if is_clipper else clampi(w - 4, 2, 4)
@@ -453,6 +458,9 @@ func compile_stats() -> Contracts.ShipStats:
 	var base_armor: float = float(spec.get("armor", 0.0))
 	var base_turn: float = float(spec.get("turn_speed", 1.75))
 	var class_reload_bonus: float = maxf(0.25, float(spec.get("reload_bonus", 1.0)))
+	var innate_ram: float = float(spec.get("ram_bonus", 0.0))
+	stats.innate_ram_bonus = innate_ram
+	stats.ram_damage_bonus = innate_ram
 
 	var synergy_sources: Array[Dictionary] = []
 	var total_weight: float = 0.0
@@ -602,7 +610,7 @@ func to_dict() -> Dictionary:
 
 func from_dict(d: Dictionary) -> void:
 	ship_id = int(d.get("ship_id", ship_id))
-	hull_tier = clampi(int(d.get("hull_tier", hull_tier)), Contracts.ShipClass.SLOOP, Contracts.ShipClass.WAR_GALLEON)
+	hull_tier = clampi(int(d.get("hull_tier", hull_tier)), Contracts.ShipClass.SLOOP, Contracts.ShipClass.MAN_O_WAR)
 	placed_items.clear()
 	stash_items.clear()
 
